@@ -1,0 +1,384 @@
+{
+  "schema_version": "nnunet-mlx.upstream-fixture-inputs.v1",
+  "reference": {
+    "nnunetv2": {
+      "version": "2.8.1",
+      "commit": "468cf803df9b267150ae2b6c0c59b8ac84f16227"
+    },
+    "dynamic-network-architectures": {
+      "version": "0.4.4",
+      "commit": "d35f85c7b92cbf3e9443b412fdc7c81f8e2e7b12"
+    },
+    "torch": {
+      "version": "2.13.0"
+    }
+  },
+  "label_cases": [
+    {
+      "name": "binary",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "tumor": 1
+        }
+      }
+    },
+    {
+      "name": "decimal_strings_and_ignore",
+      "dataset_json": {
+        "labels": {
+          "background": "0",
+          "liver": "1",
+          "cancer": "2",
+          "ignore": "3"
+        }
+      }
+    },
+    {
+      "name": "unsorted_with_rejected_values",
+      "dataset_json": {
+        "labels": {
+          "kidney": 2,
+          "background": 0,
+          "flag": true,
+          "half": 1.5,
+          "cyst": "3",
+          "padded": " 4",
+          "unicode_digit": "\u0663"
+        }
+      }
+    },
+    {
+      "name": "regions",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "whole_tumor": [
+            1,
+            2,
+            3
+          ],
+          "tumor_core": [
+            2,
+            3
+          ],
+          "enhancing": [
+            3
+          ]
+        },
+        "regions_class_order": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "regions_with_ignore",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "organ": [
+            1,
+            2
+          ],
+          "lesion": [
+            2
+          ],
+          "ignore": 3
+        },
+        "regions_class_order": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "order_without_regions",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "organ": 1
+        },
+        "regions_class_order": [
+          1
+        ]
+      }
+    },
+    {
+      "name": "no_labels",
+      "dataset_json": {
+        "channel_names": {
+          "0": "CT"
+        }
+      }
+    },
+    {
+      "name": "labels_not_mapping",
+      "dataset_json": {
+        "labels": [
+          "background",
+          "tumor"
+        ]
+      }
+    },
+    {
+      "name": "decimal_strings",
+      "dataset_json": {
+        "labels": {
+          "background": "0",
+          "liver": "1",
+          "cancer": "2",
+          "ignore": 3
+        }
+      }
+    },
+    {
+      "name": "unsorted",
+      "dataset_json": {
+        "labels": {
+          "kidney": 2,
+          "background": 0,
+          "liver": 1
+        }
+      }
+    },
+    {
+      "name": "singleton_class",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "organ": [
+            1
+          ]
+        },
+        "regions_class_order": [
+          7
+        ]
+      }
+    },
+    {
+      "name": "background_region_alias",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "empty": [
+            0
+          ],
+          "organ": [
+            1,
+            2
+          ],
+          "lesion": [
+            2
+          ]
+        },
+        "regions_class_order": [
+          1,
+          2
+        ]
+      }
+    }
+  ],
+  "runner": {
+    "plans": {
+      "dataset_name": "Dataset999_Proof",
+      "plans_name": "nnUNetPlans",
+      "image_reader_writer": "SimpleITKIO",
+      "label_manager": "LabelManager",
+      "transpose_forward": [
+        2,
+        0,
+        1
+      ],
+      "transpose_backward": [
+        1,
+        2,
+        0
+      ],
+      "foreground_intensity_properties_per_channel": {
+        "0": {}
+      },
+      "configurations": {
+        "base": {
+          "data_identifier": "nnUNetPlans_3d_fullres",
+          "batch_size": 2,
+          "batch_dice": false,
+          "patch_size": [
+            8,
+            8,
+            8
+          ],
+          "spacing": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "normalization_schemes": [
+            "NoNormalization"
+          ],
+          "use_mask_for_norm": [
+            false
+          ],
+          "resampling_fn_data": "resample_data_or_seg_to_shape",
+          "resampling_fn_data_kwargs": {
+            "is_seg": false,
+            "order": 3,
+            "order_z": 0,
+            "force_separate_z": null
+          },
+          "resampling_fn_seg": "resample_data_or_seg_to_shape",
+          "resampling_fn_seg_kwargs": {
+            "is_seg": true,
+            "order": 1,
+            "order_z": 0,
+            "force_separate_z": null
+          },
+          "resampling_fn_probabilities": "resample_data_or_seg_to_shape",
+          "resampling_fn_probabilities_kwargs": {
+            "is_seg": false,
+            "order": 1,
+            "order_z": 0,
+            "force_separate_z": null
+          },
+          "architecture": {
+            "network_class_name": "dynamic_network_architectures.architectures.unet.PlainConvUNet",
+            "arch_kwargs": {
+              "features_per_stage": [
+                4,
+                8
+              ],
+              "kernel_sizes": [
+                [
+                  3,
+                  3,
+                  3
+                ],
+                [
+                  3,
+                  3,
+                  3
+                ]
+              ],
+              "strides": [
+                [
+                  1,
+                  1,
+                  1
+                ],
+                [
+                  2,
+                  2,
+                  2
+                ]
+              ],
+              "n_conv_per_stage": [
+                2,
+                2
+              ],
+              "n_conv_per_stage_decoder": [
+                2
+              ],
+              "conv_bias": true,
+              "conv_op": "torch.nn.modules.conv.Conv3d",
+              "norm_op": "torch.nn.modules.instancenorm.InstanceNorm3d",
+              "norm_op_kwargs": {
+                "eps": 1e-05,
+                "affine": true
+              },
+              "nonlin": "torch.nn.modules.activation.LeakyReLU",
+              "nonlin_kwargs": {
+                "negative_slope": 0.01
+              }
+            }
+          }
+        },
+        "3d_fullres": {
+          "inherits_from": "base"
+        }
+      }
+    },
+    "dataset_json": {
+      "channel_names": {
+        "0": "CT"
+      },
+      "labels": {
+        "background": 0,
+        "tumor": 1
+      },
+      "file_ending": ".nii.gz"
+    },
+    "image_seed": 31,
+    "weight_seeds": [
+      910,
+      911
+    ],
+    "image_shape": [
+      10,
+      9,
+      7
+    ],
+    "image_affine": [
+      [
+        -1.0,
+        0.0,
+        0.0,
+        12.0
+      ],
+      [
+        0.0,
+        -1.0,
+        0.0,
+        8.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        -3.0
+      ],
+      [
+        0,
+        0,
+        0,
+        1
+      ]
+    ],
+    "options": [
+      {
+        "name": "default",
+        "folds": [
+          0,
+          1
+        ],
+        "mirroring_axes": [
+          0,
+          1,
+          2
+        ],
+        "step_fraction": 0.5
+      },
+      {
+        "name": "no_mirroring",
+        "folds": [
+          0,
+          1
+        ],
+        "mirroring_axes": [],
+        "step_fraction": 0.75
+      },
+      {
+        "name": "fold_1",
+        "folds": [
+          1
+        ],
+        "mirroring_axes": [
+          0,
+          1,
+          2
+        ],
+        "step_fraction": 0.5
+      }
+    ]
+  }
+}

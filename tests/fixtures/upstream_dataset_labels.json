@@ -1,0 +1,407 @@
+{
+  "schema_version": "nnunet-mlx.upstream-labels.v1",
+  "reference": {
+    "nnunetv2": {
+      "version": "2.8.1",
+      "commit": "468cf803df9b267150ae2b6c0c59b8ac84f16227"
+    },
+    "dynamic-network-architectures": {
+      "version": "0.4.4",
+      "commit": "d35f85c7b92cbf3e9443b412fdc7c81f8e2e7b12"
+    },
+    "torch": {
+      "version": "2.13.0"
+    }
+  },
+  "framework": "torch-cpu",
+  "platform": {
+    "system": "Darwin",
+    "machine": "arm64"
+  },
+  "dependencies": {
+    "numpy": "2.5.3",
+    "scipy": "1.18.1",
+    "scikit-image": "0.26.0",
+    "SimpleITK": "2.5.6",
+    "nibabel": "5.4.2",
+    "acvl-utils": "0.2.6",
+    "batchgenerators": "0.25.5",
+    "batchgeneratorsv2": "0.3.6"
+  },
+  "cases": [
+    {
+      "name": "binary",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "tumor": 1
+        }
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "tumor",
+          "value": 1
+        }
+      ],
+      "all_labels": [
+        0,
+        1
+      ],
+      "has_regions": false,
+      "output_channels": 2,
+      "ignore_label": null
+    },
+    {
+      "name": "decimal_strings_and_ignore",
+      "dataset_json": {
+        "labels": {
+          "background": "0",
+          "liver": "1",
+          "cancer": "2",
+          "ignore": "3"
+        }
+      },
+      "upstream_error": "AssertionError"
+    },
+    {
+      "name": "unsorted_with_rejected_values",
+      "dataset_json": {
+        "labels": {
+          "kidney": 2,
+          "background": 0,
+          "flag": true,
+          "half": 1.5,
+          "cyst": "3",
+          "padded": " 4",
+          "unicode_digit": "\u0663"
+        }
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "flag",
+          "value": 1
+        },
+        {
+          "name": "half",
+          "value": 1
+        },
+        {
+          "name": "kidney",
+          "value": 2
+        },
+        {
+          "name": "cyst",
+          "value": 3
+        },
+        {
+          "name": "unicode_digit",
+          "value": 3
+        },
+        {
+          "name": "padded",
+          "value": 4
+        }
+      ],
+      "all_labels": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "has_regions": false,
+      "output_channels": 5,
+      "ignore_label": null
+    },
+    {
+      "name": "regions",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "whole_tumor": [
+            1,
+            2,
+            3
+          ],
+          "tumor_core": [
+            2,
+            3
+          ],
+          "enhancing": [
+            3
+          ]
+        },
+        "regions_class_order": [
+          1,
+          2,
+          3
+        ]
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "whole_tumor",
+          "value": 1
+        },
+        {
+          "name": "tumor_core",
+          "value": 2
+        },
+        {
+          "name": "enhancing",
+          "value": 3
+        }
+      ],
+      "all_labels": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "has_regions": true,
+      "output_channels": 3,
+      "ignore_label": null
+    },
+    {
+      "name": "regions_with_ignore",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "organ": [
+            1,
+            2
+          ],
+          "lesion": [
+            2
+          ],
+          "ignore": 3
+        },
+        "regions_class_order": [
+          1,
+          2
+        ]
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "organ",
+          "value": 1
+        },
+        {
+          "name": "lesion",
+          "value": 2
+        }
+      ],
+      "all_labels": [
+        0,
+        1,
+        2
+      ],
+      "has_regions": true,
+      "output_channels": 2,
+      "ignore_label": 3
+    },
+    {
+      "name": "order_without_regions",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "organ": 1
+        },
+        "regions_class_order": [
+          1
+        ]
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "organ",
+          "value": 1
+        }
+      ],
+      "all_labels": [
+        0,
+        1
+      ],
+      "has_regions": false,
+      "output_channels": 2,
+      "ignore_label": null
+    },
+    {
+      "name": "no_labels",
+      "dataset_json": {
+        "channel_names": {
+          "0": "CT"
+        }
+      },
+      "upstream_error": "KeyError"
+    },
+    {
+      "name": "labels_not_mapping",
+      "dataset_json": {
+        "labels": [
+          "background",
+          "tumor"
+        ]
+      },
+      "upstream_error": "AttributeError"
+    },
+    {
+      "name": "decimal_strings",
+      "dataset_json": {
+        "labels": {
+          "background": "0",
+          "liver": "1",
+          "cancer": "2",
+          "ignore": 3
+        }
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "liver",
+          "value": 1
+        },
+        {
+          "name": "cancer",
+          "value": 2
+        }
+      ],
+      "all_labels": [
+        0,
+        1,
+        2
+      ],
+      "has_regions": false,
+      "output_channels": 3,
+      "ignore_label": 3
+    },
+    {
+      "name": "unsorted",
+      "dataset_json": {
+        "labels": {
+          "kidney": 2,
+          "background": 0,
+          "liver": 1
+        }
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "liver",
+          "value": 1
+        },
+        {
+          "name": "kidney",
+          "value": 2
+        }
+      ],
+      "all_labels": [
+        0,
+        1,
+        2
+      ],
+      "has_regions": false,
+      "output_channels": 3,
+      "ignore_label": null
+    },
+    {
+      "name": "singleton_class",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "organ": [
+            1
+          ]
+        },
+        "regions_class_order": [
+          7
+        ]
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "organ",
+          "value": 1
+        }
+      ],
+      "all_labels": [
+        0,
+        1
+      ],
+      "has_regions": false,
+      "output_channels": 2,
+      "ignore_label": null
+    },
+    {
+      "name": "background_region_alias",
+      "dataset_json": {
+        "labels": {
+          "background": 0,
+          "empty": [
+            0
+          ],
+          "organ": [
+            1,
+            2
+          ],
+          "lesion": [
+            2
+          ]
+        },
+        "regions_class_order": [
+          1,
+          2
+        ]
+      },
+      "labels": [
+        {
+          "name": "background",
+          "value": 0
+        },
+        {
+          "name": "organ",
+          "value": 1
+        },
+        {
+          "name": "lesion",
+          "value": 2
+        }
+      ],
+      "all_labels": [
+        0,
+        1,
+        2
+      ],
+      "has_regions": true,
+      "output_channels": 2,
+      "ignore_label": null
+    }
+  ]
+}

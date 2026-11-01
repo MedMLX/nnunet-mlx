@@ -1,0 +1,149 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nnunet-mlx"
+version = "0.6.4"
+description = "Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = "Apache-2.0 AND MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [
+  { name = "Joseph Sandoval" },
+  { name = "Alfredo Sandoval Jr." },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Image Processing",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+keywords = [
+  "nnunet",
+  "mlx",
+  "medical-imaging",
+  "image-segmentation",
+  "apple-silicon",
+  "metal",
+  "ct",
+  "mri",
+]
+dependencies = [
+  "blosc2>=3.3.2,<5",
+  "imagecodecs>=2025,<2027",
+  "medmlx-core==0.2.6",
+  "mlx==0.32.4; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "nibabel>=5.3,<6",
+  "numpy>=2.0,<3",
+  "pillow>=13.0.0,<14",
+  "safetensors>=0.6,<1",
+  "scikit-image==0.26.0",
+  "SimpleITK==2.5.6",
+  "scipy==1.18.1",
+  "tifffile>=2025,<2027",
+  "typer==0.27.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "hypothesis>=6,<7",
+  "matplotlib>=3.10,<4",
+  "pyright==1.1.414",
+  "pytest>=8.4,<10",
+  "ruff>=0.13,<1",
+]
+oracle = [
+  "dynamic-network-architectures==0.4.4",
+  "nnunetv2==2.8.1",
+  "urllib3>=2.8,<3",
+  "torch==2.13.0",
+]
+
+[project.urls]
+Homepage = "https://medmlx.org"
+Documentation = "https://github.com/MedMLX/nnunet-mlx/blob/v0.6.4/README.md"
+Repository = "https://github.com/MedMLX/nnunet-mlx"
+Issues = "https://github.com/MedMLX/nnunet-mlx/issues"
+Weights = "https://huggingface.co/models?author=MedMLX&search=nnunet"
+Upstream = "https://github.com/MIC-DKFZ/nnUNet"
+MedMLX = "https://github.com/MedMLX/medmlx"
+
+[project.scripts]
+nnunet-mlx = "nnunet_mlx.cli:main"
+
+[project.entry-points."medmlx.models"]
+nnunet-pancreas = "nnunet_mlx.named_models:PANCREAS"
+nnunet-brats2021 = "nnunet_mlx.named_models:BRATS"
+mrsegmentator = "nnunet_mlx.named_models:MRSEGMENTATOR"
+nnunet-liver = "nnunet_mlx.medmlx:LIVER"
+nnunet-autopet = "nnunet_mlx.medmlx:AUTOPET"
+
+[tool.uv]
+constraint-dependencies = [
+  "setuptools>=84.1.0",
+  "filelock>=4.2.1",
+  "msgpack>=1.2.3",
+  "Pillow>=13,<14",
+]
+environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nnunet_mlx"]
+# Oracle comparisons, benchmarks, and proofs run from a source checkout only.
+exclude = []
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "--strict-config --strict-markers"
+markers = [
+  "host: runs without MLX, accelerator hardware, or the numerical oracle",
+  "metal: requires MLX on Metal on an Apple-silicon Mac",
+  "oracle: requires the pinned Torch/dynamic-network-architectures oracle",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+extend-select = ["TID251", "TID252", "ANN401"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pyright]
+include = ["scripts","src","tests","typings"]
+extraPaths = ["src", "tests", "scripts"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.Any" = {msg = "Use a precise type and parse untyped values at the boundary."}
+"typing_extensions.Any" = {msg = "Use a precise type and parse untyped values at the boundary."}
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "src/nnunet_mlx",
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+]
+exclude = []
