@@ -9,11 +9,6 @@ replace dependency implementations or change runtime imports.
   installed runtime. Integer and slice array reads return NumPy arrays;
   chunk reads return bytes or strings. The declarations cover this slice
   interface, rather than Blosc2's expression/query indexing APIs.
-- SciPy 1.18.1: the three `scipy.ndimage` functions
-  `nnunet_mlx.prediction.postprocessing` uses for connected-component
-  filtering (`generate_binary_structure`, `label`, `sum_labels`), declared
-  only for the exact call shapes used there. SciPy ships no type stubs at
-  all for `scipy.ndimage`.
 
 MLX already ships its native core stubs. The custom Metal kernel callback
 contract is owned in nnunet_mlx.kernels.types, because the upstream core
@@ -25,3 +20,5 @@ The declaration does not promise substitutability with dict.update: MLX's
 update(parameters, strict=True) returns the module, while dict.update returns
 None. The used MLX update signature and return value are declared directly.
 This is not complete typing coverage for upstream MLX or Blosc2.
+
+SciPy types come from the maintained `scipy-stubs` development dependency.

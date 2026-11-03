@@ -59,6 +59,7 @@ dev = [
   "pyright==1.1.414",
   "pytest>=8.4,<10",
   "ruff>=0.13,<1",
+  "scipy-stubs>=1.18.1.1,<1.19",
 ]
 oracle = [
   "dynamic-network-architectures==0.4.4",
