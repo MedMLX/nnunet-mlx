@@ -19,7 +19,7 @@ from nnunet_reference.oracle.weights import (
 )
 from nnunet_reference.runner_network import build_network
 
-from nnunet_mlx import medmlx
+from nnunet_mlx import medmlx, named_models
 from nnunet_mlx.model.factory import build_model_from_plans
 from nnunet_mlx.plans import PlansContract
 from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
@@ -143,10 +143,12 @@ def test_liver_runner_writes_label_map_on_the_input_grid(
     """Run the registered liver runner end to end and write labels on the input grid."""
     folder, source = case
     output = tmp_path / "out"
-    result = medmlx.liver(image_path=str(source), output_dir=str(output), weights_path=str(folder))
+    result = named_models.liver(
+        image_path=str(source), output_dir=str(output), weights_path=str(folder)
+    )
 
     mask_path = (output / "mask.nii.gz").resolve()
-    assert result["outputs"] == {"segmentation": mask_path.as_posix()}
+    assert result["outputs"] == {"mask": mask_path.as_posix()}
     assert sorted(path.name for path in output.iterdir()) == ["mask.nii.gz"]
     mask = nib.load(mask_path)
     labels = np.asarray(mask.dataobj)
@@ -172,7 +174,7 @@ def test_cli_predict_computes_what_the_runner_computes(
     with np.load(result["outputs"]["probabilities"]) as runner, np.load(f"{prefix}.npz") as cli:
         assert np.array_equal(cli["probabilities"], runner["probabilities"])
     labels = nib.load(f"{prefix}.nii.gz").dataobj
-    assert np.array_equal(labels, nib.load(result["outputs"]["segmentation"]).dataobj)
+    assert np.array_equal(labels, nib.load(result["outputs"]["mask"]).dataobj)
 
 @pytest.mark.oracle
 @pytest.mark.parametrize("name", ["default", "no_mirroring", "fold_1"])
@@ -203,7 +205,7 @@ def test_run_matches_recorded_upstream_segmentation(
         save_probabilities=True,
     )
     outputs = result["outputs"]
-    actual = nib.load(outputs["segmentation"])
+    actual = nib.load(outputs["mask"])
     # Discrete labels and the exactly representable input affine have no tolerance.
     np.testing.assert_array_equal(np.asarray(actual.dataobj), arrays[f"segmentation_{name}"])
     np.testing.assert_array_equal(actual.affine, arrays[f"affine_{name}"])

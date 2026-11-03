@@ -22,8 +22,8 @@ LABEL_FIXTURE = json.loads(
 LABEL_CASES = cast(list[dict[str, object]], LABEL_FIXTURE["cases"])
 
 RUNNERS: dict[str, Callable[..., object]] = {
-    "liver": medmlx.liver,
-    "autopet": medmlx.autopet,
+    "liver": named_models.liver,
+    "autopet": named_models.autopet,
     "pancreas": named_models.pancreas,
     "brats": named_models.brats,
     "mrsegmentator": named_models.mrsegmentator,
@@ -81,7 +81,6 @@ def test_runner_rejects_bad_requests(
         """Fail if a runner reaches its weights download before rejecting the request."""
         raise AssertionError(f"downloaded {model_id} before rejecting {category}")
 
-    monkeypatch.setattr(medmlx, "weights_dir", download)
     monkeypatch.setattr(named_models, "weights_dir", download)
     for name in ("case_0000.nii.gz", "case_0000.png"):
         (tmp_path / name).write_bytes(b"not read")

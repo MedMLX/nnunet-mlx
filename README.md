@@ -53,10 +53,10 @@ uv pip install "nnunet-mlx>=0.6.4"
 ## Run
 
 ```python
-from nnunet_mlx.medmlx import liver
+from nnunet_mlx.named_models import liver
 
 result = liver(image_path="ct.nii.gz", output_dir="out")
-print(result["outputs"]["segmentation"])
+print(result["outputs"]["mask"])
 ```
 
 Omitting `weights_path` downloads `MedMLX/nnunet-liver-mlx` into the shared MedMLX cache
@@ -71,18 +71,19 @@ Supports 2D and 3D PlainConvUNet and ResidualEncoderUNet. Supply input channels 
 
 | MedMLX model | Python runner | Inputs | Weights |
 | --- | --- | --- | --- |
-| `nnunet-liver` | `nnunet_mlx.medmlx.liver(image_path=...)` | CT | [MedMLX/nnunet-liver-mlx](https://huggingface.co/MedMLX/nnunet-liver-mlx) |
-| `nnunet-autopet` | `nnunet_mlx.medmlx.autopet(image_paths=[ct, pet])` | Co-registered CT and SUV PET, in that order | [MedMLX/nnunet-autopet-mlx](https://huggingface.co/MedMLX/nnunet-autopet-mlx) |
+| `nnunet-liver` | `nnunet_mlx.named_models.liver(image_path=...)` | CT | [MedMLX/nnunet-liver-mlx](https://huggingface.co/MedMLX/nnunet-liver-mlx) |
+| `nnunet-autopet` | `nnunet_mlx.named_models.autopet(image_paths=[ct, pet])` | Co-registered CT and SUV PET, in that order | [MedMLX/nnunet-autopet-mlx](https://huggingface.co/MedMLX/nnunet-autopet-mlx) |
 | `nnunet-pancreas` | `nnunet_mlx.named_models.pancreas(image_path=...)` | CT | [MedMLX/nnunet-pancreas-mlx](https://huggingface.co/MedMLX/nnunet-pancreas-mlx) |
-| `nnunet-brats2021` | `nnunet_mlx.named_models.brats(t1_path=..., t1ce_path=..., t2_path=..., flair_path=...)` | Four co-registered MRI | [MedMLX/nnunet-brats-mlx](https://huggingface.co/MedMLX/nnunet-brats-mlx), fold 0 only |
+| `nnunet-brats2021` | `nnunet_mlx.named_models.brats(t1_path=..., t1ce_path=..., t2_path=..., flair_path=...)` | Four co-registered MRI | [MedMLX/nnunet-brats-mlx](https://huggingface.co/MedMLX/nnunet-brats-mlx) |
 | `mrsegmentator` | `nnunet_mlx.named_models.mrsegmentator(image_path=..., weights_path=...)` | MRI | Local `weights_path` only |
 
-All runners take `output_dir`, `weights_path` and `overwrite`. The liver and AutoPET
-runners return the label map as `outputs["segmentation"]`; the `named_models` runners
-return it as `outputs["mask"]`. Pancreas labels are background 0, pancreas 1 and cancer 2.
+All runners take `output_dir`, `weights_path` and `overwrite`, and return the label map
+as `outputs["mask"]`. Pancreas labels are background 0, pancreas 1 and cancer 2.
 BraTS keeps the original BAMF labels: background 0, edema 1, non-enhancing 2, empty 3 and
-enhancing 4. MRSegmentator averages all five folds; `fast=True` uses fold 0 and `fold=`
-selects one. It runs without mirroring and with `torch-order-fp32` arithmetic.
+enhancing 4. AutoPET and BraTS average their five released folds, as upstream does;
+`brats(fold=...)` selects one. Liver ships one fold and pancreas one `fold_all` model.
+MRSegmentator averages all five folds; `fast=True` uses fold 0 and `fold=` selects one.
+It runs without mirroring and with `torch-order-fp32` arithmetic.
 
 ### Model folders
 
@@ -119,7 +120,7 @@ Outputs, returned as absolute paths in `{"outputs": {...}, "details": {...}}`:
 
 | Role | File | Content |
 | --- | --- | --- |
-| `segmentation` | `mask.nii.gz` (`mask.nii` when `dataset.json` says so) | Label map with the input image's shape and geometry |
+| `mask` | `mask.nii.gz` (`mask.nii` when `dataset.json` says so) | Label map with the input image's shape and geometry |
 | `probabilities` | `probabilities.npz` | Channel-first class or region probabilities (`save_probabilities` only) |
 | `probability_properties` | `probabilities.pkl` | nnU-Net properties for the probability grid (`save_probabilities` only) |
 

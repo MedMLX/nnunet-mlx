@@ -1,4 +1,4 @@
-"""MedMLX liver and AutoPET declarations and the runner for converted MLX model folders.
+"""MedMLX runner for converted MLX model folders; named models live in ``named_models``.
 
 Prediction uses :class:`ModelFolderPredictor` with nnU-Net v2.8.1's
 sliding-window accumulation and checkpoint mirroring; the prediction CLI builds
@@ -23,7 +23,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Literal, cast
 
-from medmlx_core.weights import weights_dir, weights_revision
+from medmlx_core.weights import weights_revision
 
 from nnunet_mlx.contracts import parse_boolean, parse_number, parse_sequence
 from nnunet_mlx.errors import ContractError
@@ -34,25 +34,6 @@ if TYPE_CHECKING:
     from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
 
 Failure = Literal["input", "asset", "dependency", "execution"]
-
-LIVER = {
-    "id": "nnunet-liver",
-    "label": "nnU-Net liver CT",
-    "task": "segmentation",
-    "readiness": "nnunet_mlx.medmlx:readiness",
-    "run": "nnunet_mlx.medmlx:liver",
-    "summary": "Liver and liver cancer segmentation of one CT volume.",
-    "labels": {"1": "liver", "2": "cancer"},
-}
-AUTOPET = {
-    "id": "nnunet-autopet",
-    "label": "nnU-Net AutoPET II",
-    "task": "segmentation",
-    "readiness": "nnunet_mlx.medmlx:readiness",
-    "run": "nnunet_mlx.medmlx:autopet",
-    "summary": "Tumor lesion segmentation of co-registered CT and SUV PET volumes.",
-    "labels": {"1": "tumor"},
-}
 
 # MedMLX runs and the prediction CLI accumulate windows in float16, as nnU-Net v2.8.1 does.
 ACCUMULATION = "nnunet-fp16"
@@ -261,7 +242,7 @@ def run(
         save_probabilities: Also write class or region probabilities and their properties.
 
     Returns:
-        ``outputs`` maps ``segmentation`` to ``mask.nii.gz`` (or ``mask.nii``,
+        ``outputs`` maps ``mask`` to ``mask.nii.gz`` (or ``mask.nii``,
         following ``dataset.json``), a label map with the input's shape and
         geometry, and, with ``save_probabilities``, ``probabilities`` and
         ``probability_properties`` to ``probabilities.npz`` and
@@ -314,7 +295,7 @@ def run(
     if source_profile is None:
         source_profile = DEFAULT_INFERENCE_SOURCE_PROFILE
     output = Path(output_dir).expanduser()
-    targets = {"segmentation": output / f"{SEGMENTATION_STEM}{file_ending}"}
+    targets = {"mask": output / f"{SEGMENTATION_STEM}{file_ending}"}
     if save_probabilities:
         targets["probabilities"] = output / PROBABILITIES
         targets["probability_properties"] = output / PROBABILITY_PROPERTIES
@@ -367,7 +348,7 @@ def run(
                 overwrite=True,
             )
             produced = {
-                "segmentation": result.files.segmentation,
+                "mask": result.files.segmentation,
                 "probabilities": result.files.probabilities,
                 "probability_properties": result.files.properties,
             }
@@ -408,30 +389,3 @@ def run(
     }
     return payload
 
-
-def liver(
-    *, image_path: str, output_dir: str, weights_path: str | None = None,
-    overwrite: bool = False,
-) -> RunResult:
-    """Segment liver CT; automatically obtain the named model when weights are omitted."""
-    check_request([image_path], output_dir=output_dir, overwrite=overwrite)
-    folder = (weights_dir("nnunet-liver") if weights_path is None
-              else Path(weights_path).expanduser())
-    return run(weights_path=str(folder), image_paths=[image_path], output_dir=output_dir,
-               overwrite=overwrite)
-
-
-def autopet(
-    *, image_paths: Sequence[str], output_dir: str, weights_path: str | None = None,
-    overwrite: bool = False,
-) -> RunResult:
-    """Segment co-registered CT and SUV PET, supplied in that order."""
-    from medmlx_core.errors import InvalidInputError
-
-    check_request(image_paths, output_dir=output_dir, overwrite=overwrite)
-    if len(image_paths) != 2:
-        raise InvalidInputError("AutoPET requires image_paths in CT, then SUV PET order")
-    folder = (weights_dir("nnunet-autopet") if weights_path is None
-              else Path(weights_path).expanduser())
-    return run(weights_path=str(folder), image_paths=image_paths, output_dir=output_dir,
-               configuration="3d_fullres_resenc_bs80", overwrite=overwrite)

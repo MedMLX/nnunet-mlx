@@ -83,8 +83,8 @@ nnunet-mlx = "nnunet_mlx.cli:main"
 nnunet-pancreas = "nnunet_mlx.named_models:PANCREAS"
 nnunet-brats2021 = "nnunet_mlx.named_models:BRATS"
 mrsegmentator = "nnunet_mlx.named_models:MRSEGMENTATOR"
-nnunet-liver = "nnunet_mlx.medmlx:LIVER"
-nnunet-autopet = "nnunet_mlx.medmlx:AUTOPET"
+nnunet-liver = "nnunet_mlx.named_models:LIVER"
+nnunet-autopet = "nnunet_mlx.named_models:AUTOPET"
 
 [tool.uv]
 constraint-dependencies = [
