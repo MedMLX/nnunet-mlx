@@ -43,9 +43,7 @@ Explicit segmentation tie-breaking follows
   `64ea011cb65f14d9ce2737e60db9a4ae91ed7441`
 - Declared runtime dependency: `mlx==0.32.4` (see `pyproject.toml`).
   This runtime version is separate from the historical source reference above.
-- Derived kernels retain Apple copyright and MIT terms in
-  `THIRD_PARTY_NOTICES.md`; per-file source notes also record
-  the MLX fork revision for the migrated label-reduction kernel.
+- Derived kernels retain Apple copyright and MIT terms.
 - License: MIT
 
 Pretrained nnU-Net weights remain subject to the licenses and terms of their

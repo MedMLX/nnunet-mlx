@@ -9,10 +9,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from nnunet_mlx.data.cases import read_case_properties
 from nnunet_mlx.data.labels import parse_dataset_label_semantics
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.prediction.ensembling import merge_probability_files
+from nnunet_mlx.storage.properties import load_properties_pickle
 
 
 def _touch(path: str) -> None:
@@ -43,7 +43,7 @@ def test_case_properties_reject_executable_pickle_without_running_it(tmp_path: P
     _write_executable_pickle(properties, marker)
 
     with pytest.raises(ContractError):
-        read_case_properties(properties)
+        load_properties_pickle(properties)
 
     assert not marker.exists()
 
@@ -63,7 +63,7 @@ def test_case_properties_reject_cached_pickle_extension(tmp_path: Path) -> None:
         properties.write_bytes(payload)
 
         with pytest.raises(ContractError):
-            read_case_properties(properties)
+            load_properties_pickle(properties)
 
         assert not marker.exists()
     finally:
@@ -113,7 +113,7 @@ def test_case_properties_accept_plain_numpy_metadata(tmp_path: Path, protocol: i
     }
     properties.write_bytes(pickle.dumps(expected, protocol=protocol))
 
-    loaded = read_case_properties(properties)
+    loaded = load_properties_pickle(properties)
 
     assert loaded["spacing"] == expected["spacing"]
     np.testing.assert_array_equal(np.asarray(loaded["affine"]), np.eye(4))

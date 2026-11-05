@@ -21,9 +21,7 @@ if TYPE_CHECKING:
         Device,
         DeviceType,
         Dtype,
-        Stream,
         StreamOrDevice,
-        ThreadLocalStream,
         array,
     )
     from mlx.nn import (
@@ -76,42 +74,6 @@ class RandomRuntime(Protocol):
         """Generate normally distributed values with the requested shape."""
         ...
 
-    @staticmethod
-    def randint(
-        low: Scalar | array,
-        high: Scalar | array,
-        shape: Sequence[int] = [],
-        dtype: Dtype | None = ...,
-        key: array | None = None,
-        stream: StreamOrDevice = None,
-    ) -> array:
-        """Generate random integers in the requested interval."""
-        ...
-
-
-class MetalRuntime(Protocol):
-    """Declare Metal device inspection, availability and capture operations."""
-
-    @staticmethod
-    def device_info() -> dict[str, str | int]:
-        """Return information about the current Metal device."""
-        ...
-
-    @staticmethod
-    def is_available() -> bool:
-        """Report whether Metal execution is available."""
-        ...
-
-    @staticmethod
-    def start_capture(path: str) -> None:
-        """Start recording a Metal capture at the requested path."""
-        ...
-
-    @staticmethod
-    def stop_capture() -> None:
-        """Stop the active Metal capture."""
-        ...
-
 
 class FastRuntime(Protocol):
     """Declare the MLX fast Metal-kernel constructor."""
@@ -158,7 +120,6 @@ class CoreRuntime(Protocol):
     bool_: Dtype
     gpu: DeviceType
     random: RandomRuntime
-    metal: MetalRuntime
     fast: FastRuntime
     __version__: str
     __file__: str
@@ -201,35 +162,10 @@ class CoreRuntime(Protocol):
     ) -> array | dict[str, array] | tuple[dict[str, array], dict[str, str]]:
         """Load arrays or metadata from an MLX-supported file."""
         ...
-    @staticmethod
-    def save_safetensors(
-        file: str | Path | BinaryIO,
-        arrays: dict[str, array],
-        metadata: dict[str, str] | None = None,
-    ) -> None:
-        """Write named arrays and optional metadata to safetensors."""
-        ...
 
     @staticmethod
     def default_device() -> Device:
         """Return the current default MLX device."""
-        ...
-
-    @staticmethod
-    def device_info(d: Device | DeviceType | None = None) -> dict[str, str | int]:
-        """Return device information for the selected MLX device."""
-        ...
-
-    @staticmethod
-    def synchronize(
-        stream: Stream | ThreadLocalStream | Device | DeviceType | None = None,
-    ) -> None:
-        """Wait for work on the selected device or stream."""
-        ...
-
-    @staticmethod
-    def get_active_memory() -> int:
-        """Return the current active MLX memory in bytes."""
         ...
 
     @staticmethod
@@ -240,16 +176,6 @@ class CoreRuntime(Protocol):
     @staticmethod
     def reset_peak_memory() -> None:
         """Reset the peak active-memory counter."""
-        ...
-
-    @staticmethod
-    def get_cache_memory() -> int:
-        """Return the current MLX cache memory in bytes."""
-        ...
-
-    @staticmethod
-    def clear_cache() -> None:
-        """Release cached MLX allocator memory."""
         ...
 
     @staticmethod
@@ -471,21 +397,6 @@ class CoreRuntime(Protocol):
         ...
 
     @staticmethod
-    def conv3d(
-        input: array,
-        weight: array,
-        /,
-        stride: int | tuple[int, int, int] = 1,
-        padding: int | tuple[int, int, int] = 0,
-        dilation: int | tuple[int, int, int] = 1,
-        groups: int = 1,
-        *,
-        stream: StreamOrDevice = None,
-    ) -> array:
-        """Apply MLX 3D convolution using the given stride, padding and groups."""
-        ...
-
-    @staticmethod
     def where(
         condition: Scalar | array,
         x: Scalar | array,
@@ -495,20 +406,6 @@ class CoreRuntime(Protocol):
         stream: StreamOrDevice = None,
     ) -> array:
         """Select elements from two operands using a condition."""
-        ...
-
-    @staticmethod
-    def gather_mm(
-        a: array,
-        b: array,
-        /,
-        lhs_indices: array | None = None,
-        rhs_indices: array | None = None,
-        *,
-        sorted_indices: bool = False,
-        stream: StreamOrDevice = None,
-    ) -> array:
-        """Apply matrix multiplication to batches selected by index."""
         ...
 
     @staticmethod

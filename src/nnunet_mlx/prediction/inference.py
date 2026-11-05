@@ -1,10 +1,9 @@
-"""MLX-native array inference, fold averaging, and label conversion."""
+"""MLX-native array inference, fold averaging, and probability/label conversion."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
@@ -235,35 +234,6 @@ def probabilities_to_segmentation(
     return segmentation
 
 
-def logits_to_segmentation(
-    logits: HostArray,
-    *,
-    regions_class_order: Sequence[int] | None,
-) -> npt.NDArray[np.uint16]:
-    """Convert logits to labels without returning a probability volume.
-
-    For class models, take the argmax of float32 logits directly, as nnU-Net
-    does when probabilities are not requested. A float32 softmax can round
-    distinct logits to equal probabilities, so its argmax can differ at near
-    ties. For regions, compute float32 sigmoid probabilities and apply the
-    same strict 0.5 threshold and ordered overrides as the probability route.
-    """
-
-    values = np.asarray(logits, dtype=np.float32)
-    if values.ndim not in (3, 4) or not np.isfinite(values).all():
-        raise ContractError(f"expected finite channel-first 2-D/3-D logits, got {values.shape}")
-    if regions_class_order is None:
-        if values.shape[0] < 2:
-            raise ContractError("class inference requires at least two output channels")
-        return np.asarray(np.argmax(values, axis=0), dtype=np.uint16)
-    order = _validated_region_order(regions_class_order, int(values.shape[0]))
-    probabilities = _stable_sigmoid(values)
-    segmentation = np.zeros(values.shape[1:], dtype=np.uint16)
-    for channel, label in enumerate(order):
-        segmentation[probabilities[channel] > 0.5] = label
-    return segmentation
-
-
 def _validated_region_order(regions_class_order: Sequence[int], channels: int) -> tuple[int, ...]:
     """Validate the class order used to map region predictions to labels."""
     order = tuple(int(label) for label in regions_class_order)
@@ -272,21 +242,14 @@ def _validated_region_order(regions_class_order: Sequence[int], channels: int) -
     return order
 
 
-@dataclass(frozen=True, slots=True)
-class Prediction:
-    """Label map ``(*spatial)`` plus, if requested, ``(C, *spatial)`` float32 probabilities."""
-
-    segmentation: npt.NDArray[np.uint16]
-    probabilities: FloatArray | None
-
-
 class ArrayPredictor:
     """Predict from already-preprocessed ``(C, *spatial)`` arrays with a fold ensemble.
 
     Method names follow upstream's ``nnUNetPredictor``. Every model is checked with
     ``validate_inference_execution``, so architectures outside the supported envelope
     are rejected at construction. ``regions_class_order`` is ``None`` for class-based
-    models; for region-based ones it lists the label written for each output channel.
+    models, which then need at least two output channels; label decoding happens
+    after restoration, outside this class.
     """
 
     def __init__(
@@ -311,11 +274,6 @@ class ArrayPredictor:
         self.patch_size = tuple(int(value) for value in patch_size)
         self.num_outputs = num_outputs
         self.mirroring_axes = tuple(int(axis) for axis in mirroring_axes)
-        self.regions_class_order = (
-            None
-            if regions_class_order is None
-            else tuple(int(label) for label in regions_class_order)
-        )
         self.step_fraction = step_fraction
         self.accumulation = accumulation
 
@@ -342,65 +300,3 @@ class ArrayPredictor:
             step_fraction=self.step_fraction,
             accumulation=self.accumulation,
         )
-
-    def predict_single_npy_array(
-        self,
-        data_channels_first: HostArray,
-        *,
-        return_probabilities: bool = False,
-    ) -> Prediction:
-        """Predict one preprocessed case; probabilities are built only on request.
-
-        With class models, requesting probabilities can change a near-tie label:
-        the probability route takes argmax after float32 softmax, whereas the
-        label-only route takes argmax directly on logits.
-        """
-        logits = self.predict_logits_from_preprocessed_data(data_channels_first)
-        if return_probabilities:
-            probabilities = logits_to_probabilities(
-                logits, has_regions=self.regions_class_order is not None
-            )
-            segmentation = probabilities_to_segmentation(
-                probabilities, regions_class_order=self.regions_class_order
-            )
-        else:
-            probabilities = None
-            segmentation = logits_to_segmentation(
-                logits, regions_class_order=self.regions_class_order
-            )
-        return Prediction(
-            segmentation=segmentation,
-            probabilities=probabilities,
-        )
-
-    def predict_from_list_of_npy_arrays(
-        self,
-        arrays: Sequence[HostArray],
-        *,
-        return_probabilities: bool = False,
-    ) -> list[Prediction]:
-        """Predict each preprocessed array and optionally return probabilities."""
-        return [
-            self.predict_single_npy_array(array, return_probabilities=return_probabilities)
-            for array in arrays
-        ]
-
-    def predict_from_data_iterator(
-        self,
-        iterator: Iterable[Mapping[str, object]],
-        *,
-        return_probabilities: bool = False,
-    ) -> list[dict[str, object]]:
-        """Predict the preprocessed data entries supplied by an iterator."""
-        results: list[dict[str, object]] = []
-        for raw_item in iterator:
-            item = dict(raw_item)
-            data = item.get("data")
-            if not isinstance(data, np.ndarray):
-                raise ContractError("prediction iterator items require NumPy 'data'")
-            prediction = self.predict_single_npy_array(
-                cast(HostArray, data),
-                return_probabilities=return_probabilities,
-            )
-            results.append({**item, "prediction": prediction})
-        return results

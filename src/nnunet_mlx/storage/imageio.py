@@ -286,22 +286,6 @@ def _read_sitk_images(
     return data, properties
 
 
-def read_sitk_segmentation(
-    segmentation_file: str | Path,
-    expected_properties: Mapping[str, object],
-) -> HostArray:
-    """Read one integer label map and compare its spatial geometry to the case.
-
-    Spacing, origin and direction are compared with NumPy's ``allclose``
-    tolerances. A 4-D case must not couple its spatial and channel axes.
-    """
-
-    data, properties = _read_sitk_images((segmentation_file,), label_data=True)
-    labels = _validated_labels(data, name="previous-stage segmentation")
-    require_matching_geometry("SimpleITKIO", properties, expected_properties)
-    return labels
-
-
 def write_sitk_segmentation(
     segmentation: HostArray,
     output_file: str | Path,
