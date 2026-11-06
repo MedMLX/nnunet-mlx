@@ -72,7 +72,7 @@ def test_fp16_multitile_accumulation_matches_pinned_upstream() -> None:
 
 
 @pytest.mark.parametrize(
-    ("spec", "shape"), [("tiny_spec", (9, 11, 13)), ("tiny_residual_spec", (8, 8, 8))],
+    ("spec", "shape"), [("tiny_spec", (9, 11, 13)), ("tiny_residual_spec", (9, 11, 13))],
 )
 def test_compiled_model_preserves_multitile_logits(
     request: pytest.FixtureRequest, spec: str, shape: tuple[int, int, int],
@@ -86,6 +86,8 @@ def test_compiled_model_preserves_multitile_logits(
         if isinstance(topology, PlainConvUNetSpec)
         else ResidualEncoderUNet(topology)
     )
+    # Match loaded inference models, including residual stage evaluation boundaries.
+    model.eval()
     values = np.random.default_rng(43).normal(size=(1, *shape)).astype(np.float32)
     reference, compiled = (
         predict_logits(

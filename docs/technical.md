@@ -209,3 +209,66 @@ On an Apple M5 Max (MLX 0.32.4), the five-fold full-head T1 run takes 22 s (20 t
 2.2 s preprocessing, 19.7 s sliding window) with a 16.0 GB MLX peak; the PyTorch CPU
 reference takes 1,328 s. Peak memory follows the field of view: a 400 mm head and
 shoulders CT reached 27.3 GB.
+
+### Native residual-block fusion
+
+Native 3-D basic and bottleneck residual blocks add the skip tensor and apply
+LeakyReLU inside the final normalization output kernel. The affine result is
+rounded before the residual addition, preserving the separate FP32 operations.
+The 2-D, ordered-arithmetic and compiled-normalization paths retain separate
+operations.
+
+Measured on the M5 Max above with SIAM fold 0, uncompiled FP32 network arithmetic
+(`MLX_ENABLE_TF32=0`), and the full-head 0.88 mm RAS T1 case. Six paired rounds
+alternate fresh processes running the separate and fused operations. Each process
+runs one cold call followed by five warm calls for a central 256×256×192 patch,
+or two warm calls for the complete in-memory case. The table gives medians across
+the six per-process warm medians. Model loading is outside both timings; the
+complete case includes preprocessing, four sliding-window tiles at step 0.5 with
+float16 accumulation and no mirroring, and label restoration, without output-file
+writing.
+
+| Measurement | Separate operations | Fused |
+| --- | --- | --- |
+| One patch | 842.0 ms | 814.5 ms |
+| Complete single-fold case | 5.558 s | 5.452 s |
+| Peak active MLX memory | Baseline | Unchanged for both workloads |
+| Added process footprint, patch | Baseline | +4.7% |
+| Added process footprint, complete case | Baseline | +3.1% |
+
+All six warm pairs favored fusion. The paired 97% time-ratio intervals were
+0.956–0.984 for the patch and 0.940–0.992 for the complete case; neither establishes
+a gain exceeding 2%. Cold complete-case timings were inconclusive. The trained
+patch logits and all 9,144,320 final labels matched the separate operations
+exactly. Basic and bottleneck block checks preserve FP32 bits, and the existing
+pinned Torch forward and compiled sliding-window comparisons pass.
+
+### Decoder skip lifetime and stage scheduling
+
+The decoder releases its Python references to consumed encoder skips, allowing
+MLX to reclaim their buffers when dependent operations finish. Previously, the
+skip list retained every encoder output until the decoder returned.
+
+With residual-block fusion enabled in both variants, six paired rounds using
+the same SIAM workloads and measurement protocol above gave:
+
+| Measurement | Retain all skips | Release consumed skips |
+| --- | --- | --- |
+| One patch | 841.0 ms | 837.1 ms |
+| Peak active MLX memory, patch | 10.714 GB | 10.206 GB |
+| Complete single-fold case | 5.555 s | 5.565 s |
+| Peak active MLX memory, complete case | 14.750 GB | 14.750 GB |
+
+The patch saves 0.508 GB (4.7%) of peak active MLX memory. Added process footprint
+was essentially unchanged for both workloads. Warm timing was inconclusive:
+the paired 97% time-ratio intervals were 0.818–1.032 for the patch and
+0.961–1.022 for the complete case. Trained patch logits and all 9,144,320 final
+labels matched exactly. The compiled sliding-window check also covers multiple
+tiles with both plain and residual models in evaluation mode.
+
+Stage evaluation remains synchronous. In six patch pairs, asynchronous stage
+submission increased peak active MLX memory from 10.714 to 14.466 GB and added
+process footprint from 17.210 to 21.858 GB, with inconclusive timing
+(97% time-ratio interval 0.958–1.009). A fully deferred evaluation screening run
+also reached 14.466 GB of peak active MLX memory. Neither scheduling change is
+retained.

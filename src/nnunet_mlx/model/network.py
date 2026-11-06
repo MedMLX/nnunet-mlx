@@ -81,11 +81,14 @@ class SpatialInstanceNorm(MlxModule):
         *,
         input_bias: array | None = None,
         negative_slope: float | None = None,
+        residual: array | None = None,
     ) -> array:
-        """Normalize ``values + input_bias``, then apply LeakyReLU if a slope is given.
+        """Normalize ``values + input_bias``, add ``residual``, then apply LeakyReLU.
 
-        Both extras run inside the normalization kernels and give the same bits
-        as a separate bias addition before and ``leaky_relu`` after.
+        ``residual`` is added after the affine output and before the activation;
+        it must be float32 with exactly the shape of ``values``. All extras run
+        inside the normalization kernels and give the same bits as separate
+        operations in the same order.
         """
         if values.ndim < 3:
             raise ValueError("instance normalization requires a spatial dimension")
@@ -94,8 +97,13 @@ class SpatialInstanceNorm(MlxModule):
                 f"instance normalization expected {self.dims} channels, got {values.shape[-1]}"
             )
         return instance_norm(
-            values, getattr(self, "weight", None), getattr(self, "bias", None), self.eps,
-            input_bias=input_bias, negative_slope=negative_slope,
+            values,
+            getattr(self, "weight", None),
+            getattr(self, "bias", None),
+            self.eps,
+            input_bias=input_bias,
+            negative_slope=negative_slope,
+            residual=residual,
         )
 
 
@@ -212,15 +220,30 @@ class ConvNorm(MlxModule):
         """Apply ``self`` to the channel concatenation of ``parts``."""
         return self._conv_norm(parts, negative_slope=None)
 
+    def residual_activation(
+        self, values: array, residual: array, *, negative_slope: float
+    ) -> array:
+        """Apply conv-norm, add ``residual`` to its affine output, then LeakyReLU.
+
+        Native 3-D layers add the residual and activation in the normalization
+        output kernel. Layers whose convolution or normalization was replaced add
+        the residual and activate eagerly in the same order.
+        """
+        return self._conv_norm(values, negative_slope=negative_slope, residual=residual)
+
     def _conv_norm(
-        self, values: array | tuple[array, array], *, negative_slope: float | None
+        self,
+        values: array | tuple[array, array],
+        *,
+        negative_slope: float | None,
+        residual: array | None = None,
     ) -> array:
         """Convolve ``values`` (or a concatenated pair), normalize and optionally activate.
 
-        Native 3-D layers pass the convolution bias and LeakyReLU to the
-        normalization kernels, which gives the same bits as separate operations.
-        Layers whose convolution or normalization was replaced (ordered
-        arithmetic, compiled normalization) run each operation separately.
+        Native 3-D layers pass the convolution bias, ``residual`` and LeakyReLU to
+        the normalization kernels, which gives the same bits as separate operations
+        in the same order. Layers whose convolution or normalization was replaced
+        (ordered arithmetic, compiled normalization) run each operation separately.
         """
         conv, norm = self.conv, self.norm
         # Ordered arithmetic swaps in a SpatialInstanceNorm subclass, hence the exact type.
@@ -229,10 +252,13 @@ class ConvNorm(MlxModule):
                 _unbiased_convolution(conv, values),
                 input_bias=conv.bias if "bias" in conv else None,
                 negative_slope=negative_slope,
+                residual=residual,
             )
         if isinstance(values, tuple):
             values = _mx().concatenate(values, axis=-1)
         normalized = cast(ArrayTransform, norm)(cast(ArrayTransform, conv)(values))
+        if residual is not None:
+            normalized = normalized + residual
         if negative_slope is None:
             return normalized
         return _nn.leaky_relu(normalized, negative_slope=negative_slope)
@@ -430,7 +456,9 @@ class ResidualBlock(MlxModule):
     """MLX ``BasicBlockD``: conv-norm-act, conv-norm, plus a skip path, then LeakyReLU.
 
     The skip path average-pools when ``stride`` is not 1 and applies a bias-free
-    1x1 conv-norm projection when the channel count changes.
+    1x1 conv-norm projection when the channel count changes. For native 3-D
+    convolutions the final normalization kernel adds the skip and applies the
+    activation.
     The convolution and pooled skip must have compatible spatial shapes; this
     block does not crop or pad them before addition. For example, an odd spatial
     size with stride 2 and a 3-wide kernel produces incompatible shapes.
@@ -474,15 +502,17 @@ class ResidualBlock(MlxModule):
         """Add the residual branch and shortcut, then apply LeakyReLU."""
         residual = self.pool(values) if self.pool is not None else values
         residual = self.proj(residual) if self.proj is not None else residual
-        hidden = self.conv2(self.conv1(values))
-        return _nn.leaky_relu(hidden + residual, negative_slope=self._leaky_slope)
+        hidden = self.conv1(values)
+        return self.conv2.residual_activation(hidden, residual, negative_slope=self._leaky_slope)
 
 
 class BottleneckResidualBlock(MlxModule):
     """MLX ``BottleneckD``: 1x1, kxk (strided) and 1x1 convolutions plus the same skip path.
 
-    As in ``ResidualBlock``, the caller must supply spatial sizes compatible with
-    both the strided convolution and pooled skip; no alignment is applied before addition.
+    As in ``ResidualBlock``, the final normalization adds the skip and applies the
+    activation for native 3-D convolutions. The caller must supply spatial sizes
+    compatible with both the strided convolution and pooled skip; no alignment is
+    applied before addition.
     """
 
     def __init__(
@@ -531,8 +561,8 @@ class BottleneckResidualBlock(MlxModule):
         """Apply bottleneck convolutions and activate their residual sum."""
         residual = self.pool(values) if self.pool is not None else values
         residual = self.proj(residual) if self.proj is not None else residual
-        hidden = self.conv3(self.conv2(self.conv1(values)))
-        return _nn.leaky_relu(hidden + residual, negative_slope=self._leaky_slope)
+        hidden = self.conv2(self.conv1(values))
+        return self.conv3.residual_activation(hidden, residual, negative_slope=self._leaky_slope)
 
 
 def _build_residual_skip(
@@ -831,13 +861,15 @@ def _decode(
     final_upsample: ArrayTransform | None = None,
     materialize: bool = False,
 ) -> NetworkOutput:
-    """Run the decoder over encoder ``skips`` (shallowest first) and return the last head.
+    """Pop encoder ``skips`` from deepest to shallowest and return the final head.
 
     Intermediate segmentation heads are not evaluated (no deep supervision).
     ``final_upsample`` optionally replaces the last stage's upsample module, and
     ``materialize`` evaluates each stage to bound the Metal graph size.
+    Consumed skips leave the caller-owned list before evaluation, so Python
+    references do not retain their buffers after the graph's last use.
     """
-    hidden = skips[-1]
+    hidden = skips.pop()
     outputs: list[array] = []
     for index in range(decoders):
         upsample = (
@@ -845,7 +877,7 @@ def _decode(
             if final_upsample is not None and index == decoders - 1
             else getattr(owner, f"up{index}")
         )
-        skip = skips[-(index + 2)]
+        skip = skips.pop()
         decoder = getattr(owner, f"dec{index}")
         # Inference arithmetic may fuse upsampling, concatenation and padding.
         fused = getattr(decoder, "upsample_concat", None)
@@ -857,6 +889,7 @@ def _decode(
                 hidden = decoder.concatenated((hidden, skip))
             else:
                 hidden = decoder(_mx().concatenate((hidden, skip), axis=-1))
+        del skip
         _eval_stage(hidden, enabled=materialize)
         if index == decoders - 1:
             outputs.append(getattr(owner, f"seg{index}")(hidden))
