@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nnunet-mlx"
-version = "0.7.0"
+version = "0.7.1"
 description = "Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -39,7 +39,7 @@ keywords = [
 dependencies = [
   "blosc2>=3.3.2,<5",
   "imagecodecs>=2025,<2027",
-  "medmlx-core==0.2.6",
+  "medmlx-core>=0.2.6,<0.3",
   "mlx==0.32.4; platform_system == 'Darwin' and platform_machine == 'arm64'",
   "nibabel>=5.3,<6",
   "numpy>=2.0,<3",
@@ -74,7 +74,7 @@ oracle = [
 
 [project.urls]
 Homepage = "https://medmlx.org"
-Documentation = "https://github.com/MedMLX/nnunet-mlx/blob/v0.7.0/README.md"
+Documentation = "https://github.com/MedMLX/nnunet-mlx/blob/v0.7.1/README.md"
 Repository = "https://github.com/MedMLX/nnunet-mlx"
 Issues = "https://github.com/MedMLX/nnunet-mlx/issues"
 Weights = "https://huggingface.co/models?author=MedMLX&search=nnunet"

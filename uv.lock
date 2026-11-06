@@ -633,7 +633,7 @@ wheels = [
 
 [[package]]
 name = "nnunet-mlx"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "." }
 dependencies = [
     { name = "blosc2" },
@@ -677,7 +677,7 @@ requires-dist = [
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6,<7" },
     { name = "imagecodecs", specifier = ">=2025,<2027" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.10,<4" },
-    { name = "medmlx-core", specifier = "==0.2.6" },
+    { name = "medmlx-core", specifier = ">=0.2.6,<0.3" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.32.4" },
     { name = "nibabel", specifier = ">=5.3,<6" },
     { name = "nnunetv2", marker = "extra == 'oracle'", specifier = "==2.8.1" },
