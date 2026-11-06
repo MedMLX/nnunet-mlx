@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from nnunet_mlx.model.folder import ModelBundle, load_model_bundle
     from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
     from nnunet_mlx.storage.conversion import read_conversion_manifest
+    from nnunet_mlx.storage.upstream import convert_trained_model
 
     __version__: str
 
@@ -26,6 +27,7 @@ __all__ = [
     "ModelFolderPredictor",
     "PlainConvUNetSpec",
     "ResidualEncoderUNetSpec",
+    "convert_trained_model",
     "load_model_bundle",
     "read_conversion_manifest",
 ]
@@ -38,6 +40,7 @@ _DEFERRED_EXPORTS = {
     "ModelFolderPredictor": "nnunet_mlx.prediction.pipeline",
     "load_model_bundle": "nnunet_mlx.model.folder",
     "read_conversion_manifest": "nnunet_mlx.storage.conversion",
+    "convert_trained_model": "nnunet_mlx.storage.upstream",
 }
 
 

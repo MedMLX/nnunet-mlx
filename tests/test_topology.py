@@ -20,11 +20,11 @@ def test_forward_oracle_constructs_from_original_architecture_kwargs(
     from importlib import import_module
 
     import numpy as np
-    from nnunet_reference.oracle.weights import convert_state_dict, load_converted_state
 
     from nnunet_mlx.model.network import PlainConvUNet
     from nnunet_mlx.plans import PlansContract
     from nnunet_mlx.runtime import import_mlx
+    from nnunet_mlx.storage.weights import convert_state_dict, load_converted_state
 
     plans = PlansContract.from_payload(tiny_model_plans, configuration="3d_fullres")
     architecture = cast(dict[str, object], plans.configuration.raw["architecture"])

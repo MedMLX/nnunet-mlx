@@ -19,6 +19,7 @@ import numpy.typing as npt
 from nnunet_mlx.data.labels import parse_dataset_label_semantics
 from nnunet_mlx.model.network import PlainConvUNet
 from nnunet_mlx.model.topology import PlainConvUNetSpec
+from nnunet_mlx.storage.weights import convert_state_dict, load_converted_state
 from nnunet_reference.oracle.fixtures import (
     raw_inference_fixture,
     restoration_properties,
@@ -37,7 +38,6 @@ from nnunet_reference.oracle.network import (
     build_torch_plain_conv_unet,
     converted_candidate,
 )
-from nnunet_reference.oracle.weights import convert_state_dict, load_converted_state
 
 
 def run_prediction_restoration_parity(

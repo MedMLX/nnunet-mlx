@@ -20,6 +20,40 @@ MRSEGMENTATOR_SOURCE_PROFILE = "mrsegmentator-1.2-base"
 LESIONTRACER_SOURCE_PROFILE = "lesiontracer-autopet3-2024"
 
 
+# Every nnU-Net v2.8.1 trainer that keeps nnUNetTrainer.build_network_architecture.
+# These variants change only training (epochs, loss, optimizer, augmentation,
+# sampling), so the inference network follows from plans.json and the checkpoint,
+# and mirroring follows from its stored inference_allowed_mirroring_axes.
+# nnUNetTrainerBN and the Primus trainers build other networks and are excluded.
+PLANS_BUILT_TRAINERS = (
+    "nnUNetTrainer",
+    "nnUNetTrainerAdam", "nnUNetTrainerAdam1en3", "nnUNetTrainerAdam3en4",
+    "nnUNetTrainerAdan", "nnUNetTrainerAdan1en1", "nnUNetTrainerAdan1en3",
+    "nnUNetTrainerAdan3en4", "nnUNetTrainerAdanCosAnneal",
+    "nnUNetTrainerBenchmark_5epochs", "nnUNetTrainerBenchmark_5epochs_noDataLoading",
+    "nnUNetTrainerCELoss", "nnUNetTrainerCELoss_5epochs", "nnUNetTrainerCosAnneal",
+    "nnUNetTrainerDA5", "nnUNetTrainerDA5Segord0", "nnUNetTrainerDA5_10epochs",
+    "nnUNetTrainerDA5ord0", "nnUNetTrainerDiceCELoss_noSmooth", "nnUNetTrainerDiceLoss",
+    "nnUNetTrainerDiceTopK10Loss", "nnUNetTrainerNoDA", "nnUNetTrainerNoDeepSupervision",
+    "nnUNetTrainerNoMirroring", "nnUNetTrainerTopk10Loss", "nnUNetTrainerTopk10LossLS01",
+    "nnUNetTrainerVanillaAdam", "nnUNetTrainerVanillaAdam1en3",
+    "nnUNetTrainerVanillaAdam3en4",
+    "nnUNetTrainer_1epoch", "nnUNetTrainer_5epochs", "nnUNetTrainer_10epochs",
+    "nnUNetTrainer_20epochs", "nnUNetTrainer_50epochs", "nnUNetTrainer_100epochs",
+    "nnUNetTrainer_250epochs", "nnUNetTrainer_500epochs", "nnUNetTrainer_750epochs",
+    "nnUNetTrainer_2000epochs", "nnUNetTrainer_4000epochs", "nnUNetTrainer_8000epochs",
+    "nnUNetTrainer_250epochs_NoMirroring", "nnUNetTrainer_2000epochs_NoMirroring",
+    "nnUNetTrainer_4000epochs_NoMirroring", "nnUNetTrainer_8000epochs_NoMirroring",
+    "nnUNetTrainer_DASegOrd0", "nnUNetTrainer_DASegOrd0_NoMirroring",
+    "nnUNetTrainer_noDummy2DDA", "nnUNetTrainer_onlyMirror01",
+    "nnUNetTrainer_onlyMirror01_1500ep", "nnUNetTrainer_onlyMirror01_DA5",
+    "nnUNetTrainer_onlyMirror01_DASegOrd0", "nnUNetTrainer_probabilisticOversampling",
+    "nnUNetTrainer_probabilisticOversampling_010",
+    "nnUNetTrainer_probabilisticOversampling_033", "nnUNetTrainer_warmup",
+    "nnUNet_Trainer_BS8",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class InferenceModelIdentity:
     """One admitted combination of plans dataset, upstream trainer and configuration.
@@ -101,7 +135,9 @@ _SOURCE_PROFILES = {
     ),
     DEFAULT_INFERENCE_SOURCE_PROFILE: InferenceSourceProfile(
         name=DEFAULT_INFERENCE_SOURCE_PROFILE,
-        models=(InferenceModelIdentity(None, "nnUNetTrainer", None),),
+        models=tuple(
+            InferenceModelIdentity(None, trainer, None) for trainer in PLANS_BUILT_TRAINERS
+        ),
     ),
     PROSTATE158_2D_SOURCE_PROFILE: InferenceSourceProfile(
         name=PROSTATE158_2D_SOURCE_PROFILE,

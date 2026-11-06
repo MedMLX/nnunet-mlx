@@ -11,12 +11,6 @@ from typing import cast
 import numpy as np
 import pytest
 from nnunet_reference.fixture_types import RunnerFixture, UpstreamRecording
-from nnunet_reference.oracle.weights import (
-    ConvertedState,
-    HostArray,
-    load_converted_state,
-    map_key_and_layout,
-)
 from nnunet_reference.runner_network import build_network
 
 from nnunet_mlx import medmlx, named_models
@@ -30,6 +24,12 @@ from nnunet_mlx.storage.checkpoint import (
     save_inference_checkpoint,
 )
 from nnunet_mlx.storage.conversion import CONVERSION_FILENAME, CONVERSION_SCHEMA
+from nnunet_mlx.storage.weights import (
+    ConvertedState,
+    HostArray,
+    load_converted_state,
+    map_key_and_layout,
+)
 
 nib = import_module("nibabel")
 PLAIN = "dynamic_network_architectures.architectures.unet.PlainConvUNet"

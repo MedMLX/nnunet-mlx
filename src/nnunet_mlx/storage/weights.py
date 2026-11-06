@@ -1,4 +1,4 @@
-"""Strict Torch-oracle to MLX weight mapping for supported nnU-Net graphs."""
+"""Map upstream nnU-Net state-dict keys and tensor layouts to MLX network weights."""
 
 from __future__ import annotations
 

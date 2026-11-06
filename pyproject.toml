@@ -53,6 +53,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Reading upstream PyTorch checkpoints for conversion; inference never imports torch.
+convert = [
+  "torch>=2.6,<3",
+]
 dev = [
   "hypothesis>=6,<7",
   "matplotlib>=3.10,<4",

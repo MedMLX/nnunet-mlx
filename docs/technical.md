@@ -82,3 +82,22 @@ argmax of any voxel. Splitting the decoder convolution changes logits by at
 most 5.3e-5 relative to 0.6.4; fusing bias and LeakyReLU changes no bits.
 The full-case label maps of 0.6.4 and this change are identical in all
 59,572,224 voxels.
+
+## Converting trained models
+
+`nnunet-mlx convert` and `nnunet-mlx predict` read upstream `checkpoint_final.pth`
+files with `torch.load(weights_only=True)`, allowing only the NumPy scalar types that
+nnU-Net's training log stores. Network weights are renamed and transposed to MLX's
+channels-last layout, and loaded strictly into the network built from `plans.json`,
+so a missing, extra or misshapen tensor fails the conversion. Plans from before
+nnU-Net 2.4 get the `architecture` block that nnU-Net 2.8.1's `ConfigurationManager`
+rebuilds for them.
+
+Checks against released checkpoints (Apple M5 Max, MLX 0.32.4):
+
+| Model | Result |
+| --- | --- |
+| Liver (Zenodo 18807203), `PlainConvUNet`, fold 0 | Weights and `state.json` bitwise identical to the published `MedMLX/nnunet-liver-mlx` bundle; a CT prediction through `nnunet-mlx predict -d 3 -c 3d_fullres` matches that bundle's in every voxel |
+| AutoPET II (Zenodo 8362371), `ResidualEncoderUNet`, pre-2.4 plans, folds 0 and 3 | On a random 128³ two-channel patch, the largest logit difference from the pinned PyTorch network is 9.0e-5 and 1.1e-4 (largest logit 33.7 and 36.3); every voxel's label agrees |
+
+Converting the five AutoPET folds takes about 5 s.
