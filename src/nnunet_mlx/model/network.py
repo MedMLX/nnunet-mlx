@@ -22,7 +22,7 @@ _, _nn = import_mlx()
 
 if TYPE_CHECKING:
     from mlx.core import array
-    from mlx.nn import AvgPool2d, AvgPool3d, ModuleTree
+    from mlx.nn import AvgPool2d, AvgPool3d, Conv3d, ModuleTree
     from mlx.nn import Module as MlxModule
     from mlx.utils import Tree
 else:
@@ -73,6 +73,20 @@ class SpatialInstanceNorm(MlxModule):
 
     def __call__(self, values: array) -> array:
         """Validate channel layout and normalize each sample over its spatial axes."""
+        return self.normalize(values)
+
+    def normalize(
+        self,
+        values: array,
+        *,
+        input_bias: array | None = None,
+        negative_slope: float | None = None,
+    ) -> array:
+        """Normalize ``values + input_bias``, then apply LeakyReLU if a slope is given.
+
+        Both extras run inside the normalization kernels and give the same bits
+        as a separate bias addition before and ``leaky_relu`` after.
+        """
         if values.ndim < 3:
             raise ValueError("instance normalization requires a spatial dimension")
         if values.shape[-1] != self.dims:
@@ -80,7 +94,8 @@ class SpatialInstanceNorm(MlxModule):
                 f"instance normalization expected {self.dims} channels, got {values.shape[-1]}"
             )
         return instance_norm(
-            values, getattr(self, "weight", None), getattr(self, "bias", None), self.eps
+            values, getattr(self, "weight", None), getattr(self, "bias", None), self.eps,
+            input_bias=input_bias, negative_slope=negative_slope,
         )
 
 
@@ -191,7 +206,82 @@ class ConvNorm(MlxModule):
 
     def __call__(self, values: array) -> array:
         """Apply convolution and instance normalization to channels-last features."""
-        return self.norm(self.conv(values))
+        return self._conv_norm(values, negative_slope=None)
+
+    def concatenated(self, parts: tuple[array, array]) -> array:
+        """Apply ``self`` to the channel concatenation of ``parts``."""
+        return self._conv_norm(parts, negative_slope=None)
+
+    def _conv_norm(
+        self, values: array | tuple[array, array], *, negative_slope: float | None
+    ) -> array:
+        """Convolve ``values`` (or a concatenated pair), normalize and optionally activate.
+
+        Native 3-D layers pass the convolution bias and LeakyReLU to the
+        normalization kernels, which gives the same bits as separate operations.
+        Layers whose convolution or normalization was replaced (ordered
+        arithmetic, compiled normalization) run each operation separately.
+        """
+        conv, norm = self.conv, self.norm
+        # Ordered arithmetic swaps in a SpatialInstanceNorm subclass, hence the exact type.
+        if isinstance(conv, _nn.Conv3d) and type(norm) is SpatialInstanceNorm:
+            return norm.normalize(
+                _unbiased_convolution(conv, values),
+                input_bias=conv.bias if "bias" in conv else None,
+                negative_slope=negative_slope,
+            )
+        if isinstance(values, tuple):
+            values = _mx().concatenate(values, axis=-1)
+        normalized = cast(ArrayTransform, norm)(cast(ArrayTransform, conv)(values))
+        if negative_slope is None:
+            return normalized
+        return _nn.leaky_relu(normalized, negative_slope=negative_slope)
+
+
+def _unbiased_convolution(conv: Conv3d, values: array | tuple[array, array]) -> array:
+    """Apply ``conv`` without its bias to ``values`` or to a channel-concatenated pair.
+
+    MLX 0.32.4's implicit-GEMM 3-D convolution uses 64-wide output tiles once
+    the input has at least 64 channels and 8192 output voxels, so a decoder
+    convolution from two 32-channel inputs to 32 outputs computes twice the
+    needed products. For that shape (see ``_split_concatenated_input``) the
+    convolution is the sum of one convolution per part over the matching
+    input-channel slice of the weight, each on 32-wide tiles, and the
+    concatenated tensor is never formed. The float32 result differs from the
+    single convolution only by the rounding of the two partial sums.
+    """
+    mx = _mx()
+    weight = conv.weight
+    if not isinstance(values, tuple):
+        return mx.conv3d(values, weight, conv.stride, conv.padding, conv.dilation)
+    if not _split_concatenated_input(conv, values):
+        concatenated = mx.concatenate(values, axis=-1)
+        return mx.conv3d(concatenated, weight, conv.stride, conv.padding, conv.dilation)
+    first, second = values
+    split = first.shape[-1]
+    return mx.conv3d(
+        first, weight[..., :split], conv.stride, conv.padding, conv.dilation
+    ) + mx.conv3d(second, weight[..., split:], conv.stride, conv.padding, conv.dilation)
+
+
+def _split_concatenated_input(conv: Conv3d, parts: tuple[array, array]) -> bool:
+    """Return whether per-part convolution avoids MLX's oversized 3-D output tiles.
+
+    Mirrors the tile choice in MLX 0.32.4 ``implicit_gemm_conv_3D_gpu``: 64-row
+    tiles (and therefore 64-column tiles) when the input has at least 64
+    channels and the output at least 8192 voxels. With 17 to 32 output channels
+    and parts of fewer than 64 channels (multiples of 16, so each part stays on
+    the implicit-GEMM path), every part runs on 32-wide tiles instead.
+    """
+    channels = [int(part.shape[-1]) for part in parts]
+    output_channels = int(conv.weight.shape[0])
+    voxels = int(parts[0].size // (parts[0].shape[0] * channels[0]))
+    return (
+        sum(channels) >= 64
+        and 16 < output_channels <= 32
+        and all(value < 64 and value % 16 == 0 for value in channels)
+        and voxels >= 8192
+    )
 
 
 class ConvNormAct(ConvNorm):
@@ -220,7 +310,11 @@ class ConvNormAct(ConvNorm):
 
     def __call__(self, values: array) -> array:
         """Apply convolution and normalization followed by LeakyReLU."""
-        return _nn.leaky_relu(super().__call__(values), negative_slope=self._leaky_slope)
+        return self._conv_norm(values, negative_slope=self._leaky_slope)
+
+    def concatenated(self, parts: tuple[array, array]) -> array:
+        """Apply ``self`` to the channel concatenation of ``parts``."""
+        return self._conv_norm(parts, negative_slope=self._leaky_slope)
 
 
 class StackedConvs(MlxModule):
@@ -257,6 +351,25 @@ class StackedConvs(MlxModule):
         for index in range(self._count):
             values = getattr(self, f"block{index}")(values)
         return values
+
+    def concatenated(self, parts: tuple[array, array]) -> array:
+        """Apply the blocks to the channel concatenation of ``parts``.
+
+        A first block replaced by an inference-arithmetic subclass receives the
+        concatenated tensor through its own ``__call__``.
+        """
+        first = self._block(0)
+        if type(first) is ConvNormAct:
+            values = first.concatenated(parts)
+        else:
+            values = first(_mx().concatenate(parts, axis=-1))
+        for index in range(1, self._count):
+            values = self._block(index)(values)
+        return values
+
+    def _block(self, index: int) -> ConvNormAct:
+        """Return the convolution block at ``index``."""
+        return getattr(self, f"block{index}")
 
 
 class PlainConvUNet(MlxModule):
@@ -739,10 +852,11 @@ def _decode(
         if fused is not None and upsample is not final_upsample:
             hidden = fused(upsample, hidden, skip)
         else:
-            hidden = upsample(hidden)
-            hidden = _match_spatial(hidden, skip)
-            hidden = _mx().concatenate((hidden, skip), axis=-1)
-            hidden = decoder(hidden)
+            hidden = _match_spatial(upsample(hidden), skip)
+            if type(decoder) is StackedConvs:
+                hidden = decoder.concatenated((hidden, skip))
+            else:
+                hidden = decoder(_mx().concatenate((hidden, skip), axis=-1))
         _eval_stage(hidden, enabled=materialize)
         if index == decoders - 1:
             outputs.append(getattr(owner, f"seg{index}")(hidden))

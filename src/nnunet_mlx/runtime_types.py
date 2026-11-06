@@ -378,6 +378,21 @@ class CoreRuntime(Protocol):
         ...
 
     @staticmethod
+    def conv3d(
+        input: array,
+        weight: array,
+        /,
+        stride: int | Sequence[int] = 1,
+        padding: int | Sequence[int] = 0,
+        dilation: int | Sequence[int] = 1,
+        groups: int = 1,
+        *,
+        stream: StreamOrDevice = None,
+    ) -> array:
+        """Apply a channels-last 3-D convolution."""
+        ...
+
+    @staticmethod
     def stack(
         arrays: Sequence[array], axis: int | None = 0, *, stream: StreamOrDevice = None
     ) -> array:

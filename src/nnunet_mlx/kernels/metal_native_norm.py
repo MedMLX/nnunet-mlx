@@ -6,6 +6,13 @@ affine output. Each thread accumulates one channel over a 256-row spatial
 partition, so float32 chains stay as short as the reduction they replace; the
 partitions are then summed with MLX. ``torch-order-fp32`` keeps its own
 reduction-order kernels in ``metal_instance_norm``.
+
+A preceding convolution's bias and a following LeakyReLU can run inside these
+kernels. Each kernel reads ``value + input_bias`` and the affine kernel applies
+``max(slope * r, r)``, the same float32 operations as the separate bias
+addition and ``mlx.nn.leaky_relu``. MLX compiles custom kernels in its default
+``safe`` math mode, so nothing is reassociated and the output is bitwise equal
+to the unfused sequence while skipping two full-tensor reads and writes.
 """
 
 from __future__ import annotations
@@ -29,12 +36,14 @@ _SUMS_SOURCE = r"""
     uint p = (index / C) % P;
     uint b = index / (P * C);
     uint end = min((p + 1) * ROWS, uint(S));
+    float offset = INPUT_BIAS ? input_bias[c] : 0.0f;
     if (CENTERED) {
         float shift = mean[b * C + c];
         float sum = 0.0f;
         float squares = 0.0f;
         for (uint i = p * ROWS; i < end; ++i) {
-            float centered = values[(b * S + i) * C + c] - shift;
+            float value = values[(b * S + i) * C + c];
+            float centered = (INPUT_BIAS ? value + offset : value) - shift;
             sum += centered;
             squares = metal::fma(centered, centered, squares);
         }
@@ -42,7 +51,10 @@ _SUMS_SOURCE = r"""
         sums[index * 2 + 1] = squares;
     } else {
         float sum = 0.0f;
-        for (uint i = p * ROWS; i < end; ++i) sum += values[(b * S + i) * C + c];
+        for (uint i = p * ROWS; i < end; ++i) {
+            float value = values[(b * S + i) * C + c];
+            sum += INPUT_BIAS ? value + offset : value;
+        }
         sums[index] = sum;
     }
 """
@@ -52,7 +64,9 @@ _AFFINE_SOURCE = r"""
     if (i >= B * S * C) return;
     uint c = i % C;
     uint j = (i / (S * C)) * C + c;
-    result[i] = metal::fma(values[i] - mean[j], scale[j], bias[c]);
+    float value = INPUT_BIAS ? values[i] + input_bias[c] : values[i];
+    float normalized = metal::fma(value - mean[j], scale[j], bias[c]);
+    result[i] = LEAKY ? metal::max(slope[0] * normalized, normalized) : normalized;
 """
 
 
@@ -62,21 +76,32 @@ def _kernels() -> tuple[MetalKernel, MetalKernel]:
     mx, _ = import_mlx()
     sums = mx.fast.metal_kernel(
         name="nnunet_native_norm_sums",
-        input_names=["values", "mean"],
+        input_names=["values", "mean", "input_bias"],
         output_names=["sums"],
         source=_SUMS_SOURCE,
     )
     affine = mx.fast.metal_kernel(
         name="nnunet_native_norm_affine",
-        input_names=["values", "mean", "scale", "bias"],
+        input_names=["values", "mean", "scale", "bias", "input_bias", "slope"],
         output_names=["result"],
         source=_AFFINE_SOURCE,
     )
     return sums, affine
 
 
-def instance_norm(values: array, weight: array | None, bias: array | None, eps: float) -> array:
+def instance_norm(
+    values: array,
+    weight: array | None,
+    bias: array | None,
+    eps: float,
+    *,
+    input_bias: array | None = None,
+    negative_slope: float | None = None,
+) -> array:
     """Normalize float32 channels-last ``values`` per sample and channel.
+
+    ``input_bias`` (per channel) is added to ``values`` first, as a convolution
+    bias would be; ``negative_slope`` applies LeakyReLU to the result.
 
     The first pass gives a provisional mean ``m``. The second sums ``d = x - m``
     and ``d * d`` in one read; with ``D = mean(d)``, the corrected mean is
@@ -94,11 +119,14 @@ def instance_norm(values: array, weight: array | None, bias: array | None, eps: 
     spatial = values.size // (batch * channels)
     partitions = (spatial + _ROWS - 1) // _ROWS
     grid = (batch * partitions * channels, 1, 1)
+    # Unused inputs still need a buffer; the INPUT_BIAS and LEAKY flags skip their reads.
+    offsets = mx.zeros((1,), dtype=mx.float32) if input_bias is None else input_bias
+    slope = mx.array([0.0 if negative_slope is None else negative_slope], dtype=mx.float32)
 
     def partial_sums(mean: array, *, centered: bool) -> array:
         """Launch partial sums for raw values or values centered on the mean."""
         return sums_kernel(
-            inputs=[values, mean],
+            inputs=[values, mean, offsets],
             template=[
                 ("B", batch),
                 ("S", spatial),
@@ -106,6 +134,7 @@ def instance_norm(values: array, weight: array | None, bias: array | None, eps: 
                 ("P", partitions),
                 ("ROWS", _ROWS),
                 ("CENTERED", centered),
+                ("INPUT_BIAS", input_bias is not None),
             ],
             grid=grid,
             threadgroup=(256, 1, 1),
@@ -124,8 +153,14 @@ def instance_norm(values: array, weight: array | None, bias: array | None, eps: 
         scale = weight * scale
     shift = mx.zeros((channels,), dtype=mx.float32) if bias is None else bias
     return affine_kernel(
-        inputs=[values, mean, scale, shift],
-        template=[("B", batch), ("S", spatial), ("C", channels)],
+        inputs=[values, mean, scale, shift, offsets, slope],
+        template=[
+            ("B", batch),
+            ("S", spatial),
+            ("C", channels),
+            ("INPUT_BIAS", input_bias is not None),
+            ("LEAKY", negative_slope is not None),
+        ],
         grid=(values.size, 1, 1),
         threadgroup=(256, 1, 1),
         output_shapes=[values.shape],
