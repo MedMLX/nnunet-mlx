@@ -85,6 +85,36 @@ enhancing 4. AutoPET and BraTS average their five released folds, as upstream do
 MRSegmentator averages all five folds; `fast=True` uses fold 0 and `fold=` selects one.
 It runs without mirroring and with `torch-order-fp32` arithmetic.
 
+### Your own trained models
+
+`nnunet-mlx predict` takes `nnUNetv2_predict`'s options and runs a model you trained
+with nnU-Net. Install the `convert` extra once; it adds PyTorch for reading checkpoints,
+which inference never uses:
+
+```bash
+uv pip install "nnunet-mlx[convert]"
+export nnUNet_results=/path/to/nnUNet_results
+nnunet-mlx predict -i imagesTs -o predictions -d 3 -c 3d_fullres
+```
+
+The first run converts the PyTorch checkpoints to MLX and caches the result in
+`~/.cache/nnunet-mlx` (`NNUNET_MLX_CACHE`); later runs reuse it until a checkpoint
+changes. `-m` takes a trained model folder instead of `-d`/`-c`/`-tr`/`-p`. Also
+supported: `-f`, `-chk`, `-step_size`, `--disable_tta`, `--save_probabilities`,
+`--continue_prediction`, `-npp`, `-nps`, `-prev_stage_predictions`, `-num_parts` and
+`-part_id`. Device options don't apply: everything runs on Metal.
+
+To keep a converted folder, for sharing or for the Python API:
+
+```bash
+nnunet-mlx convert nnUNet_results/Dataset003_Liver/nnUNetTrainer__nnUNetPlans__3d_fullres mlx-model
+```
+
+Conversion supports `nnUNetTrainer` and the 56 nnU-Net 2.8.1 trainer variants that build
+the network from the plans (epoch counts, losses, optimizers, augmentation,
+`NoMirroring`), and plans from before nnU-Net 2.4. Trainers that build their own
+network, such as `nnUNetTrainerBN`, Primus or custom ones, are rejected.
+
 ### Model folders
 
 `nnunet_mlx.medmlx.run` runs any native MLX model folder within the supported

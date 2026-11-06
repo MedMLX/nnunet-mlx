@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 from typer import _click as click
 
-from nnunet_mlx.commands import download, prediction, runtime
+from nnunet_mlx.commands import download, prediction, runtime, upstream
 from nnunet_mlx.errors import ContractError
 
 app = typer.Typer(
@@ -23,6 +23,8 @@ app = typer.Typer(
 app.add_typer(runtime.app, name="runtime")
 app.add_typer(prediction.app, name="model")
 app.command("download")(download.download_command)
+app.command("convert")(upstream.convert_command)
+app.command("predict")(upstream.predict_command)
 
 
 def _version_callback(value: bool) -> None:

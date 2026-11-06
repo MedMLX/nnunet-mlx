@@ -2,16 +2,106 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import replace
 
 from nnunet_mlx.contracts import parse_integer, parse_mapping, parse_sequence, parse_string
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.plans import PlansContract
+from nnunet_mlx.plans import PlansContract, resolve_configuration
 from nnunet_mlx.prediction.source import (
     TOTALSEGMENTATOR_CT_SOURCE_PROFILE,
     resolve_inference_source_profile,
     validate_inference_model_identity,
 )
+
+# Configuration fields that pre-2.4 nnU-Net plans use instead of ``architecture``.
+LEGACY_ARCHITECTURE_FIELDS = (
+    "UNet_class_name", "UNet_base_num_features", "n_conv_per_stage_encoder",
+    "n_conv_per_stage_decoder", "num_pool_per_axis", "pool_op_kernel_sizes",
+    "conv_kernel_sizes", "unet_max_num_features",
+)
+
+
+def legacy_architecture(configuration: Mapping[str, object]) -> dict[str, object]:
+    """Build the ``architecture`` block for a pre-2.4 plans configuration.
+
+    ``configuration`` must be inheritance-resolved. This reproduces nnU-Net
+    2.8.1's ``ConfigurationManager`` backwards-compatibility branch exactly: the
+    class follows ``UNet_class_name``, features double per stage up to
+    ``unet_max_num_features``, and the remaining options take the defaults those
+    plans were trained with (biased convolutions, affine instance norm with eps
+    1e-5, no dropout, LeakyReLU).
+
+    Raises:
+        ContractError: If ``UNet_class_name`` is neither ``PlainConvUNet`` nor
+            ``ResidualEncoderUNet`` or a legacy field is malformed.
+    """
+    class_name = configuration.get("UNet_class_name")
+    if class_name == "PlainConvUNet":
+        network_class = "dynamic_network_architectures.architectures.unet.PlainConvUNet"
+        blocks_key = "n_conv_per_stage"
+    elif class_name == "ResidualEncoderUNet":
+        network_class = (
+            "dynamic_network_architectures.architectures.residual_unet.ResidualEncoderUNet"
+        )
+        blocks_key = "n_blocks_per_stage"
+    else:
+        raise ContractError(f"unsupported legacy nnU-Net architecture {class_name!r}")
+    stages = len(parse_sequence(
+        configuration.get("n_conv_per_stage_encoder"), name="encoder stages"
+    ))
+    dims = len(parse_sequence(configuration.get("patch_size"), name="patch_size"))
+    if dims not in (2, 3):
+        raise ContractError("legacy nnU-Net plans must be 2-D or 3-D")
+    base = parse_integer(configuration.get("UNet_base_num_features"), name="base features")
+    maximum = parse_integer(configuration.get("unet_max_num_features"), name="maximum features")
+    return {
+        "network_class_name": network_class,
+        "arch_kwargs": {
+            "n_stages": stages,
+            "features_per_stage": [min(base * 2**index, maximum) for index in range(stages)],
+            "conv_op": f"torch.nn.modules.conv.Conv{dims}d",
+            "kernel_sizes": configuration["conv_kernel_sizes"],
+            "strides": configuration["pool_op_kernel_sizes"],
+            blocks_key: configuration["n_conv_per_stage_encoder"],
+            "n_conv_per_stage_decoder": configuration["n_conv_per_stage_decoder"],
+            "conv_bias": True,
+            "norm_op": f"torch.nn.modules.instancenorm.InstanceNorm{dims}d",
+            "norm_op_kwargs": {"eps": 1e-5, "affine": True},
+            "dropout_op": None,
+            "dropout_op_kwargs": None,
+            "nonlin": "torch.nn.LeakyReLU",
+            "nonlin_kwargs": {"inplace": True},
+        },
+        "_kw_requires_import": ["conv_op", "norm_op", "dropout_op", "nonlin"],
+    }
+
+
+def upgrade_legacy_plans(plans_json: Mapping[str, object]) -> dict[str, object]:
+    """Return a copy of ``plans_json`` with every configuration in the current format.
+
+    Each configuration whose resolved form lacks ``architecture`` gets the block
+    ``legacy_architecture`` builds from it, and the legacy fields are removed, as
+    nnU-Net 2.8.1 does when it loads such plans. Current-format plans come back
+    unchanged.
+    """
+    upgraded = deepcopy(dict(plans_json))
+    configurations = parse_mapping(upgraded.get("configurations"), name="configurations")
+    resolved = {name: resolve_configuration(upgraded, name) for name in configurations}
+    for name, configuration in resolved.items():
+        if "architecture" in configuration:
+            continue
+        raw = parse_mapping(configurations[name], name=f"configuration {name}")
+        raw["architecture"] = legacy_architecture(configuration)
+        configurations[name] = raw
+    for name, raw_value in configurations.items():
+        raw = parse_mapping(raw_value, name=f"configuration {name}")
+        for field in LEGACY_ARCHITECTURE_FIELDS:
+            raw.pop(field, None)
+        configurations[name] = raw
+    upgraded["configurations"] = configurations
+    return upgraded
 
 
 def normalize_inference_plans(
@@ -53,40 +143,9 @@ def normalize_inference_plans(
         plans.configuration.patch_size
     ) != 3:
         raise ContractError("TotalSegmentator legacy plans require a 3-D PlainConvUNet")
-    stages = len(parse_sequence(
-        configuration.get("n_conv_per_stage_encoder"), name="encoder stages"
-    ))
-    base = parse_integer(configuration.get("UNet_base_num_features"), name="base features")
-    maximum = parse_integer(configuration.get("unet_max_num_features"), name="maximum features")
-    # Pinned nnU-Net 2.8.1 ConfigurationManager reconstructs precisely these
-    # defaults for the released pre-architecture plans; source files stay intact.
-    architecture = {
-        "network_class_name": "dynamic_network_architectures.architectures.unet.PlainConvUNet",
-        "arch_kwargs": {
-            "n_stages": stages,
-            "features_per_stage": [min(base * 2**index, maximum) for index in range(stages)],
-            "conv_op": "torch.nn.modules.conv.Conv3d",
-            "kernel_sizes": configuration["conv_kernel_sizes"],
-            "strides": configuration["pool_op_kernel_sizes"],
-            "n_conv_per_stage": configuration["n_conv_per_stage_encoder"],
-            "n_conv_per_stage_decoder": configuration["n_conv_per_stage_decoder"],
-            "conv_bias": True,
-            "norm_op": "torch.nn.modules.instancenorm.InstanceNorm3d",
-            "norm_op_kwargs": {"eps": 1e-5, "affine": True},
-            "dropout_op": None,
-            "dropout_op_kwargs": None,
-            "nonlin": "torch.nn.LeakyReLU",
-            "nonlin_kwargs": {"inplace": True},
-        },
-        "_kw_requires_import": ["conv_op", "norm_op", "dropout_op", "nonlin"],
-    }
-    for field in (
-        "UNet_class_name", "UNet_base_num_features", "n_conv_per_stage_encoder",
-        "n_conv_per_stage_decoder", "num_pool_per_axis", "pool_op_kernel_sizes",
-        "conv_kernel_sizes", "unet_max_num_features",
-    ):
+    configuration["architecture"] = legacy_architecture(configuration)
+    for field in LEGACY_ARCHITECTURE_FIELDS:
         del configuration[field]
-    configuration["architecture"] = architecture
     configurations[plans.configuration.name] = configuration
     payload["configurations"] = configurations
     return replace(

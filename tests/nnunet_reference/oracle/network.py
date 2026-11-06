@@ -24,11 +24,11 @@ import numpy as np
 from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 from nnunet_mlx.runtime import import_mlx
+from nnunet_mlx.storage.weights import convert_state_dict, load_converted_state
 from nnunet_reference.oracle.metrics import (
     ForwardParityResult,
     measure_forward_parity,
 )
-from nnunet_reference.oracle.weights import convert_state_dict, load_converted_state
 
 
 def build_torch_plain_conv_unet(spec: PlainConvUNetSpec, *, seed: int) -> TorchModule:
