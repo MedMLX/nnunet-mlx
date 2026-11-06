@@ -212,13 +212,14 @@ def siam(
         image_path: One 3-D NIfTI head volume of any contrast.
         output_dir: Destination for ``mask.nii.gz``.
         weights_path: Local converted model folder; omitted weights download automatically.
-        overwrite: Allow replacing an existing mask.
+        overwrite: Allow replacing an existing mask; input/output aliases are always refused.
         voxel_size: SIAM's ``-voxelsize``: before prediction, overwrite the canonical
             affine's diagonal with this isotropic spacing in mm, without resampling.
             Upstream uses it to scale small heads, such as newborns (about 1.4 times the
             true spacing), towards adult size. The mask keeps the input geometry.
         fold: Optional single fold; by default every fold in the model folder is used.
     """
+    import os
     from importlib import import_module
     from tempfile import TemporaryDirectory
 
@@ -234,13 +235,18 @@ def siam(
     nibabel = import_module("nibabel")
     orientations = import_module("nibabel.orientations")
     source_path = Path(image_path).expanduser()
+    output = Path(output_dir).expanduser()
+    target = output / "mask.nii.gz"
+    # The generic runner sees only the staged canonical scan on the reoriented path.
+    if target.resolve() == source_path.resolve() or (
+        target.exists() and target.samefile(source_path)
+    ):
+        raise InvalidInputError("SIAM output must differ from the input image")
+    if (target.exists() or target.is_symlink()) and not overwrite:
+        raise InvalidInputError(f"SIAM output already exists: {target}; pass overwrite=True")
     source = nibabel.load(str(source_path))
     if int(source.ndim) != 3:
         raise InvalidInputError(f"SIAM takes one 3-D volume, got shape {source.shape}")
-    output = Path(output_dir).expanduser()
-    target = output / "mask.nii.gz"
-    if target.exists() and not overwrite:
-        raise InvalidInputError(f"SIAM output already exists: {target}; pass overwrite=True")
     folder = (weights_dir("siam") if weights_path is None
               else Path(weights_path).expanduser())
     folds = None if fold is None else [fold]
@@ -274,7 +280,19 @@ def siam(
         restored = orientations.apply_orientation(
             labels, orientations.ornt_transform(ras, ornt)
         )
+        # NiBabel follows links when saving; publish a completed private file instead.
+        staged_mask = Path(staging) / "mask.nii.gz"
         nibabel.save(nibabel.Nifti1Image(np.ascontiguousarray(restored), source_affine),
-                     str(target))
+                     str(staged_mask))
+        if overwrite:
+            os.replace(staged_mask, target)
+        else:
+            # A destination created during prediction must not be overwritten either.
+            try:
+                os.link(staged_mask, target)
+            except FileExistsError as error:
+                raise InvalidInputError(
+                    f"SIAM output already exists: {target}; pass overwrite=True"
+                ) from error
     result["outputs"]["mask"] = target.resolve().as_posix()
     return result

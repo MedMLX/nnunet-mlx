@@ -10,6 +10,7 @@ from typing import cast
 
 import numpy as np
 import pytest
+from medmlx_core.errors import InvalidInputError
 from nnunet_reference.fixture_types import RunnerFixture, UpstreamRecording
 from nnunet_reference.runner_network import build_network
 
@@ -159,18 +160,28 @@ def test_liver_runner_writes_label_map_on_the_input_grid(
     assert np.allclose(mask.affine, INPUT_AFFINE, rtol=0, atol=1e-6)
 
 
-def test_siam_runner_predicts_in_canonical_order_and_restores_the_input_grid(
+@pytest.fixture
+def siam_model(
     tmp_path: Path,
     tiny_model_plans: dict[str, object],
     tiny_model_dataset: dict[str, object],
+) -> Path:
+    """Create a tiny native model with SIAM's source profile."""
+    from nnunet_mlx.prediction.source import SIAM_SOURCE_PROFILE
+
+    tiny_model_plans["dataset_name"] = "Dataset1007_Partialization_MixLowDill"
+    return _converted_folder(tmp_path, tiny_model_plans, tiny_model_dataset,
+                             trainer_name="nnUNetTrainerNoDA",
+                             source_profile=SIAM_SOURCE_PROFILE)
+
+
+def test_siam_runner_predicts_in_canonical_order_and_restores_the_input_grid(
+    tmp_path: Path,
+    siam_model: Path,
 ) -> None:
     """Predict a non-RAS input as SIAM does: on its RAS reorientation, mapped back exactly."""
     from nnunet_mlx.prediction.source import SIAM_SOURCE_PROFILE
 
-    tiny_model_plans["dataset_name"] = "Dataset1007_Partialization_MixLowDill"
-    folder = _converted_folder(tmp_path, tiny_model_plans, tiny_model_dataset,
-                               trainer_name="nnUNetTrainerNoDA",
-                               source_profile=SIAM_SOURCE_PROFILE)
     # Permuted and flipped axes (PIL), so the inverse reorientation is not the forward one.
     affine = np.array([[0.0, 0.0, -1.0, 4.0], [-1.0, 0.0, 0.0, 6.0],
                        [0.0, -1.0, 0.0, 2.0], [0, 0, 0, 1]])
@@ -182,8 +193,8 @@ def test_siam_runner_predicts_in_canonical_order_and_restores_the_input_grid(
     nib.save(canonical, canonical_path)
 
     result = named_models.siam(image_path=str(source), output_dir=str(tmp_path / "siam"),
-                               weights_path=str(folder), fold=1)
-    expected = medmlx.run(weights_path=str(folder), image_paths=[str(canonical_path)],
+                               weights_path=str(siam_model), fold=1)
+    expected = medmlx.run(weights_path=str(siam_model), image_paths=[str(canonical_path)],
                           output_dir=str(tmp_path / "canonical"), folds=[1],
                           source_profile=SIAM_SOURCE_PROFILE, use_mirroring=False)
 
@@ -194,6 +205,87 @@ def test_siam_runner_predicts_in_canonical_order_and_restores_the_input_grid(
     assert result["details"]["folds"] == [1] and result["details"]["mirroring_axes"] == []
     restored = nib.as_closest_canonical(mask)
     assert np.array_equal(restored.dataobj, nib.load(expected["outputs"]["mask"]).dataobj)
+
+
+@pytest.mark.parametrize("voxel_size", [None, 1.4], ids=["non-ras", "voxel-size"])
+@pytest.mark.parametrize("alias", ["same-path", "symlink", "hardlink", "linked-directory"])
+def test_siam_rejects_output_aliases_without_changing_input(
+    tmp_path: Path, siam_model: Path, voxel_size: float | None, alias: str,
+) -> None:
+    """Keep the original scan byte-for-byte even when overwrite is requested."""
+    source = tmp_path / "mask.nii.gz"
+    affine = INPUT_AFFINE if voxel_size is None else np.eye(4)
+    data = np.random.default_rng(37).normal(0, 1, (10, 9, 7)).astype(np.float32)
+    nib.save(nib.Nifti1Image(data, affine), source)
+    original = source.read_bytes()
+    output = tmp_path if alias == "same-path" else tmp_path / "out"
+    if alias == "linked-directory":
+        output.symlink_to(tmp_path, target_is_directory=True)
+    elif alias != "same-path":
+        output.mkdir()
+        target = output / "mask.nii.gz"
+        if alias == "symlink":
+            target.symlink_to(source)
+        else:
+            target.hardlink_to(source)
+
+    try:
+        with pytest.raises(InvalidInputError, match="must differ from"):
+            named_models.siam(
+                image_path=str(source), output_dir=str(output), weights_path=str(siam_model),
+                voxel_size=voxel_size, fold=1, overwrite=True,
+            )
+    finally:
+        assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize("existing", ["file", "symlink", "hardlink", "dangling-symlink"])
+def test_siam_replaces_only_the_output_directory_entry(
+    tmp_path: Path, siam_model: Path, overwrite: bool, existing: str,
+) -> None:
+    """Honor overwrite without following output links or modifying their referents."""
+    source = tmp_path / "scan.nii.gz"
+    data = np.random.default_rng(37).normal(0, 1, (10, 9, 7)).astype(np.float32)
+    nib.save(nib.Nifti1Image(data, INPUT_AFFINE), source)
+    output = tmp_path / "out"
+    output.mkdir()
+    target = output / "mask.nii.gz"
+    other = tmp_path / "other.nii.gz"
+    previous = b"previous output"
+    if existing == "file":
+        target.write_bytes(previous)
+    elif existing == "dangling-symlink":
+        target.symlink_to(other)
+    else:
+        other.write_bytes(previous)
+        if existing == "symlink":
+            target.symlink_to(other)
+        else:
+            target.hardlink_to(other)
+
+    if overwrite:
+        result = named_models.siam(
+            image_path=str(source), output_dir=str(output), weights_path=str(siam_model),
+            fold=1, overwrite=True,
+        )
+        assert result["outputs"]["mask"] == str(target)
+        assert not target.is_symlink()
+        assert nib.load(target).shape == data.shape
+    else:
+        with pytest.raises(InvalidInputError, match="already exists"):
+            named_models.siam(
+                image_path=str(source), output_dir=str(output), weights_path=str(siam_model),
+                fold=1,
+            )
+        if existing != "dangling-symlink":
+            assert target.read_bytes() == previous
+        assert target.is_symlink() == (existing in {"symlink", "dangling-symlink"})
+    if existing in {"symlink", "hardlink"}:
+        assert other.read_bytes() == previous
+    else:
+        assert not other.exists()
+    assert sorted(path.name for path in output.iterdir()) == ["mask.nii.gz"]
 
 
 def test_cli_predict_computes_what_the_runner_computes(
