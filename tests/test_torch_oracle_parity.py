@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -156,6 +157,18 @@ def test_network_forward_matches_pinned_torch_oracle(
     else:
         assert isinstance(spec, ResidualEncoderUNetSpec)
         result = run_residual_forward_parity(spec)
+    assert result.metrics.passed
+    assert result.metrics.argmax_agreement == 1.0
+
+
+def test_split_decoder_convolution_matches_pinned_torch_oracle(
+    tiny_spec: PlainConvUNetSpec,
+) -> None:
+    """Compare a 32-feature first stage, whose decoder convolution runs split per part."""
+    pytest.importorskip("torch")
+    pytest.importorskip("dynamic_network_architectures.architectures.unet")
+    spec = replace(tiny_spec, features=(32, 64))
+    result = run_forward_parity(spec, spatial_shape=(32, 32, 32))
     assert result.metrics.passed
     assert result.metrics.argmax_agreement == 1.0
 
