@@ -101,3 +101,27 @@ Checks against released checkpoints (Apple M5 Max, MLX 0.32.4):
 | AutoPET II (Zenodo 8362371), `ResidualEncoderUNet`, pre-2.4 plans, folds 0 and 3 | On a random 128³ two-channel patch, the largest logit difference from the pinned PyTorch network is 9.0e-5 and 1.1e-4 (largest logit 33.7 and 36.3); every voxel's label agrees |
 
 Converting the five AutoPET folds takes about 5 s.
+
+## SIAM v0.3
+
+`siam()` runs the five-fold release on Zenodo 17733431 (`Dataset1007_Partialization_MixLowDill`,
+`nnUNetTrainerNoDA`, ResEnc XL `3d_fullres`, 256×256×192 patch, 0.75 mm). Its folds
+convert with `nnunet-mlx convert` to the tensors published as `MedMLX/siam`. The
+upstream reference runs `nnUNetPredictor` with the settings `siam-pred -m 0` uses
+(0.5 step, Gaussian weighting, no mirroring, all folds) under PyTorch 2.13 and nnU-Net
+2.8.1 on the CPU in float32.
+
+| Case | Folds | Voxels agreeing | Minimum Dice | Largest probability difference |
+| --- | --- | --- | --- | --- |
+| Full-head T1, 0.88 mm, RAS | 0–4 | 99.995% (496 of 9,144,320 differ) | 0.998 (`Anomalies`, 0.4 mL); all others ≥ 0.9996 | 0.004 (mean 4.3e-6) |
+| Full-head T1, 0.88 mm, RAS | 0 | 99.994% | 0.997 (`Anomalies`) | 0.0038 |
+| Skull-stripped glioma T1, 1 mm, LPS | 0 | 99.990% | 0.9995 | 0.0040 |
+
+The glioma case goes through the runner's reorientation: the same 879 voxels differ
+whether its LPS output or the canonical prediction is compared, so restoring the input
+grid adds no differences.
+
+On an Apple M5 Max (MLX 0.32.4), the five-fold full-head T1 run takes 22 s (20 tiles,
+2.2 s preprocessing, 19.7 s sliding window) with a 16.0 GB MLX peak; the PyTorch CPU
+reference takes 1,328 s. Peak memory follows the field of view: a 400 mm head and
+shoulders CT reached 27.3 GB.

@@ -23,7 +23,7 @@ Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
 
 ## Use with MedMLX
 
-The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this package. It installs this runtime, downloads published weights on first use (MRSegmentator needs a local `weights_path`), and lets an AI agent describe, check and run `nnunet-liver`, `nnunet-pancreas`, `nnunet-brats2021`, `nnunet-autopet` and `mrsegmentator` for you.
+The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this package. It installs this runtime, downloads published weights on first use (MRSegmentator needs a local `weights_path`), and lets an AI agent describe, check and run `nnunet-liver`, `nnunet-pancreas`, `nnunet-brats2021`, `nnunet-autopet`, `siam` and `mrsegmentator` for you.
 
 ```sh
 uv tool install --python 3.13 "medmlx[segment,mcp]"
@@ -75,6 +75,7 @@ Supports 2D and 3D PlainConvUNet and ResidualEncoderUNet. Supply input channels 
 | `nnunet-autopet` | `nnunet_mlx.named_models.autopet(image_paths=[ct, pet])` | Co-registered CT and SUV PET, in that order | [MedMLX/nnunet-autopet-mlx](https://huggingface.co/MedMLX/nnunet-autopet-mlx) |
 | `nnunet-pancreas` | `nnunet_mlx.named_models.pancreas(image_path=...)` | CT | [MedMLX/nnunet-pancreas-mlx](https://huggingface.co/MedMLX/nnunet-pancreas-mlx) |
 | `nnunet-brats2021` | `nnunet_mlx.named_models.brats(t1_path=..., t1ce_path=..., t2_path=..., flair_path=...)` | Four co-registered MRI | [MedMLX/nnunet-brats-mlx](https://huggingface.co/MedMLX/nnunet-brats-mlx) |
+| `siam` | `nnunet_mlx.named_models.siam(image_path=...)` | One head MRI of any contrast, or CT | [MedMLX/siam](https://huggingface.co/MedMLX/siam) |
 | `mrsegmentator` | `nnunet_mlx.named_models.mrsegmentator(image_path=..., weights_path=...)` | MRI | Local `weights_path` only |
 
 All runners take `output_dir`, `weights_path` and `overwrite`, and return the label map
@@ -84,6 +85,16 @@ enhancing 4. AutoPET and BraTS average their five released folds, as upstream do
 `brats(fold=...)` selects one. Liver ships one fold and pancreas one `fold_all` model.
 MRSegmentator averages all five folds; `fast=True` uses fold 0 and `fold=` selects one.
 It runs without mirroring and with `torch-order-fp32` arithmetic.
+
+SIAM v0.3 is the contrast-agnostic head tissue model by Valabregue et al.
+([repository](https://github.com/romainVala/SIAM), [paper](https://arxiv.org/abs/2605.02737)),
+trained on synthetic images. Its 17 labels cover grey and white matter, CSF and
+ventricles, cerebellar grey matter, deep nuclei, hippocampus and amygdala, dura,
+vessels, skull and scalp, plus `Anomalies` (17) for pathology. Like `siam-pred`, the
+runner predicts on the volume reoriented to RAS without interpolation, averages the
+five folds without mirroring, and returns labels on the input grid; `voxel_size=`
+reproduces `-voxelsize` for small heads and `fold=` selects one fold. A typical head
+MRI needs about 16 GB of memory, more for larger fields of view.
 
 ### Your own trained models
 
@@ -239,7 +250,7 @@ disables compilation and is accepted only by the profiles that list it.
 
 ### Compatibility profiles
 
-Models trained with the default `nnUNetTrainer` use the default profile. A named profile
+Models trained with `nnUNetTrainer` or a variant that builds the network from the plans use the default profile. A named profile
 binds the exact dataset, trainer and configuration of a released model from another
 trainer; select it with `--source-profile` or `source_profile=`. Loading checks each
 checkpoint's trainer, configuration and plans against the selected profile. Profiles
@@ -247,7 +258,8 @@ cover inference only, not training or segmentation quality.
 
 | Profile | Architecture | Configuration | Notes |
 | --- | --- | --- | --- |
-| `nnunet-v2.8.1-default` ✓ | `PlainConvUNet`, residual `BasicBlockD` and `BottleneckD` | any | `nnUNetTrainer` only |
+| `nnunet-v2.8.1-default` ✓ | `PlainConvUNet`, residual `BasicBlockD` and `BottleneckD` | any | `nnUNetTrainer` and the trainer variants that build the network from the plans |
+| `siam-0.3` ✓ | Residual `BasicBlockD` | `3d_fullres` | SIAM v0.3 (`nnUNetTrainerNoDA`); 18 outputs; no mirroring |
 | `prostate158-2d-100epochs` ✓ | Residual `BasicBlockD` | `2d` | Prostate158; up to 3 outputs |
 | `chronoroot2-arabidopsis-2000epochs` ✓ | Residual `BasicBlockD` | `2d` | ChronoRoot2 plant roots; 7 outputs |
 | `cads-oar258-open` ✓ | Residual `BasicBlockD` | `3d_fullres` | CADS OAR258; 30 outputs; fold `all`, no mirroring |
