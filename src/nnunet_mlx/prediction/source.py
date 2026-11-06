@@ -18,6 +18,7 @@ TOTALSEGMENTATOR_CT_SOURCE_PROFILE = "totalsegmentator-v2-ct"
 LION_FDG_SOURCE_PROFILE = "lion-fdg-1.0.4"
 MRSEGMENTATOR_SOURCE_PROFILE = "mrsegmentator-1.2-base"
 LESIONTRACER_SOURCE_PROFILE = "lesiontracer-autopet3-2024"
+SIAM_SOURCE_PROFILE = "siam-0.3"
 
 
 # Every nnU-Net v2.8.1 trainer that keeps nnUNetTrainer.build_network_architecture.
@@ -78,6 +79,14 @@ class InferenceSourceProfile:
 
 
 _SOURCE_PROFILES = {
+    # SIAM v0.3 (Zenodo 17733431). NoDA only removes training augmentation; its
+    # checkpoints carry no mirroring axes, so inference is the default path unmirrored.
+    SIAM_SOURCE_PROFILE: InferenceSourceProfile(
+        name=SIAM_SOURCE_PROFILE,
+        models=(InferenceModelIdentity(
+            "Dataset1007_Partialization_MixLowDill", "nnUNetTrainerNoDA", "3d_fullres",
+        ),),
+    ),
     LESIONTRACER_SOURCE_PROFILE: InferenceSourceProfile(
         name=LESIONTRACER_SOURCE_PROFILE,
         models=(InferenceModelIdentity(

@@ -44,6 +44,8 @@ def _converted_folder(
     dataset_json: dict[str, object],
     *,
     recording: RunnerFixture | None = None,
+    trainer_name: str = "nnUNetTrainer",
+    source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE,
 ) -> Path:
     """Write a model folder with seeded MLX or regenerated upstream weights."""
 
@@ -71,7 +73,7 @@ def _converted_folder(
             model=model,
             state=InferenceCheckpointState(
                 identity=CheckpointIdentity(
-                    trainer_name="nnUNetTrainer",
+                    trainer_name=trainer_name,
                     configuration="3d_fullres",
                     fold=fold,
                 ),
@@ -93,7 +95,7 @@ def _converted_folder(
         "schema_version": CONVERSION_SCHEMA,
         "engine_version": version("nnunet-mlx"),
         "configuration": "3d_fullres",
-        "source_profile": DEFAULT_INFERENCE_SOURCE_PROFILE,
+        "source_profile": source_profile,
         "architecture": PLAIN,
         "spatial_dims": 3,
         "folds": folds,
@@ -155,6 +157,43 @@ def test_liver_runner_writes_label_map_on_the_input_grid(
     assert labels.shape == (10, 9, 7)
     assert set(np.unique(labels).tolist()) <= {0, 1}
     assert np.allclose(mask.affine, INPUT_AFFINE, rtol=0, atol=1e-6)
+
+
+def test_siam_runner_predicts_in_canonical_order_and_restores_the_input_grid(
+    tmp_path: Path,
+    tiny_model_plans: dict[str, object],
+    tiny_model_dataset: dict[str, object],
+) -> None:
+    """Predict a non-RAS input as SIAM does: on its RAS reorientation, mapped back exactly."""
+    from nnunet_mlx.prediction.source import SIAM_SOURCE_PROFILE
+
+    tiny_model_plans["dataset_name"] = "Dataset1007_Partialization_MixLowDill"
+    folder = _converted_folder(tmp_path, tiny_model_plans, tiny_model_dataset,
+                               trainer_name="nnUNetTrainerNoDA",
+                               source_profile=SIAM_SOURCE_PROFILE)
+    # Permuted and flipped axes (PIL), so the inverse reorientation is not the forward one.
+    affine = np.array([[0.0, 0.0, -1.0, 4.0], [-1.0, 0.0, 0.0, 6.0],
+                       [0.0, -1.0, 0.0, 2.0], [0, 0, 0, 1]])
+    data = np.random.default_rng(37).normal(0, 1, (10, 9, 7)).astype(np.float32)
+    source = tmp_path / "case_0000.nii.gz"
+    nib.save(nib.Nifti1Image(data, affine), source)
+    canonical = nib.as_closest_canonical(nib.load(source))
+    canonical_path = tmp_path / "canonical.nii.gz"
+    nib.save(canonical, canonical_path)
+
+    result = named_models.siam(image_path=str(source), output_dir=str(tmp_path / "siam"),
+                               weights_path=str(folder), fold=1)
+    expected = medmlx.run(weights_path=str(folder), image_paths=[str(canonical_path)],
+                          output_dir=str(tmp_path / "canonical"), folds=[1],
+                          source_profile=SIAM_SOURCE_PROFILE, use_mirroring=False)
+
+    mask = nib.load(result["outputs"]["mask"])
+    assert sorted(path.name for path in (tmp_path / "siam").iterdir()) == ["mask.nii.gz"]
+    assert mask.shape == (10, 9, 7)
+    assert np.allclose(mask.affine, affine, rtol=0, atol=1e-6)
+    assert result["details"]["folds"] == [1] and result["details"]["mirroring_axes"] == []
+    restored = nib.as_closest_canonical(mask)
+    assert np.array_equal(restored.dataobj, nib.load(expected["outputs"]["mask"]).dataobj)
 
 
 def test_cli_predict_computes_what_the_runner_computes(

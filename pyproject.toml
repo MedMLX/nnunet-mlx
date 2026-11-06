@@ -90,6 +90,7 @@ nnunet-brats2021 = "nnunet_mlx.named_models:BRATS"
 mrsegmentator = "nnunet_mlx.named_models:MRSEGMENTATOR"
 nnunet-liver = "nnunet_mlx.named_models:LIVER"
 nnunet-autopet = "nnunet_mlx.named_models:AUTOPET"
+siam = "nnunet_mlx.named_models:SIAM"
 
 [tool.uv]
 constraint-dependencies = [
