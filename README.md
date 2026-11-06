@@ -6,14 +6,14 @@ Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
 
 [![PyPI](https://img.shields.io/pypi/v/nnunet-mlx)](https://pypi.org/project/nnunet-mlx/)
 [![Python](https://img.shields.io/pypi/pyversions/nnunet-mlx)](https://pypi.org/project/nnunet-mlx/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/nnunet-mlx/blob/v0.6.4/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/nnunet-mlx/blob/v0.7.0/LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MLX-black?logo=apple)](https://github.com/ml-explore/mlx)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97_Hugging_Face-weights-yellow)](https://huggingface.co/MedMLX/nnunet-liver-mlx)
 [![MedMLX](https://img.shields.io/badge/MedMLX-runtime-A51C30)](https://github.com/MedMLX/medmlx)
 
 [Liver model weights](https://huggingface.co/MedMLX/nnunet-liver-mlx) · [Upstream](https://github.com/MIC-DKFZ/nnUNet) · [MedMLX](https://github.com/MedMLX/medmlx)
 
-<img src="https://raw.githubusercontent.com/MedMLX/nnunet-mlx/v0.6.4/docs/example.png" alt="nnU-Net segmentations of a liver CT and a brain tumor MRI" width="100%">
+<img src="https://raw.githubusercontent.com/MedMLX/nnunet-mlx/v0.7.0/docs/example.png" alt="nnU-Net segmentations of a liver CT and a brain tumor MRI" width="100%">
 
 </div>
 
@@ -47,7 +47,7 @@ medmlx setup nnunet-liver
 ```bash
 uv venv --python 3.13
 source .venv/bin/activate
-uv pip install "nnunet-mlx>=0.6.4"
+uv pip install "nnunet-mlx>=0.7.0"
 ```
 
 ## Run
@@ -269,6 +269,6 @@ not a public issue.
 
 ## License
 
-[Apache-2.0](https://github.com/MedMLX/nnunet-mlx/blob/v0.6.4/LICENSE). See [third-party notices](https://github.com/MedMLX/nnunet-mlx/blob/v0.6.4/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms.
+[Apache-2.0](https://github.com/MedMLX/nnunet-mlx/blob/v0.7.0/LICENSE). See [third-party notices](https://github.com/MedMLX/nnunet-mlx/blob/v0.7.0/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms.
 
 For research and education. Outputs require human review.
