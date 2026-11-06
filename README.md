@@ -34,12 +34,6 @@ claude mcp add --scope user medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"
 
 For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"`. Other MCP clients take the same command and arguments. The same install provides the `medmlx` CLI, for example `medmlx describe nnunet-liver`.
 
-To download the liver model ahead of time:
-
-```sh
-medmlx setup nnunet-liver
-```
-
 > **For AI agents:** prefer the MedMLX MCP tools (`list_models`, `describe_model`, `model_readiness`, `run_model`, `get_job`) over writing Python against this package.
 
 ## Install
@@ -59,13 +53,10 @@ result = liver(image_path="ct.nii.gz", output_dir="out")
 print(result["outputs"]["mask"])
 ```
 
-Omitting `weights_path` downloads `MedMLX/nnunet-liver-mlx` into the shared MedMLX cache
-on first use; interrupted downloads resume and later runs work offline. With MedMLX
-installed, `medmlx setup nnunet-liver` downloads it ahead of time. To use your own copy,
-pass a published bundle folder as `weights_path`. `details.weights_revision` records the
-downloaded commit, or `null` for a folder without a MedMLX download record.
-
-Supports 2D and 3D PlainConvUNet and ResidualEncoderUNet. Supply input channels in the model’s expected order.
+Without `weights_path`, the runner downloads `MedMLX/nnunet-liver-mlx` into the shared
+MedMLX cache on first use; later runs work offline. `medmlx setup nnunet-liver`
+downloads it ahead of time, and a model folder passed as `weights_path` uses your own
+copy.
 
 ### Named models
 
@@ -79,12 +70,15 @@ Supports 2D and 3D PlainConvUNet and ResidualEncoderUNet. Supply input channels 
 | `mrsegmentator` | `nnunet_mlx.named_models.mrsegmentator(image_path=..., weights_path=...)` | MRI | Local `weights_path` only |
 
 All runners take `output_dir`, `weights_path` and `overwrite`, and return the label map
-as `outputs["mask"]`. Pancreas labels are background 0, pancreas 1 and cancer 2.
-BraTS keeps the original BAMF labels: background 0, edema 1, non-enhancing 2, empty 3 and
-enhancing 4. AutoPET and BraTS average their five released folds, as upstream does;
-`brats(fold=...)` selects one. Liver ships one fold and pancreas one `fold_all` model.
-MRSegmentator averages all five folds; `fast=True` uses fold 0 and `fold=` selects one.
-It runs without mirroring and with `torch-order-fp32` arithmetic.
+as `outputs["mask"]`.
+
+- **Liver** runs its one fold.
+- **Pancreas** runs one `fold_all` model. Labels: background 0, pancreas 1, cancer 2.
+- **AutoPET** averages its five released folds, as upstream does.
+- **BraTS** averages five folds; `fold=` selects one. It keeps the original BAMF labels:
+  background 0, edema 1, non-enhancing 2, empty 3, enhancing 4.
+- **MRSegmentator** averages five folds; `fast=True` uses fold 0 and `fold=` selects
+  one. It runs without mirroring, with `torch-order-fp32` arithmetic.
 
 SIAM v0.3 is the contrast-agnostic head tissue model by Valabregue et al.
 ([repository](https://github.com/romainVala/SIAM), [paper](https://arxiv.org/abs/2605.02737)),
@@ -126,16 +120,16 @@ the network from the plans (epoch counts, losses, optimizers, augmentation,
 `NoMirroring`), and plans from before nnU-Net 2.4. Trainers that build their own
 network, such as `nnUNetTrainerBN`, Primus or custom ones, are rejected.
 
-### Model folders
+### Other model folders
 
-`nnunet_mlx.medmlx.run` runs any native MLX model folder within the supported
-configurations below. Keep the complete folder layout:
+`nnunet_mlx.medmlx.run(weights_path=..., image_paths=[...], output_dir=...)` runs any
+converted MLX model folder within the supported configurations below. Keep the complete
+layout:
 
 ```text
 mlx-model/
 ├── plans.json
 ├── dataset.json
-├── conversion.json  # optional export metadata; not read by inference
 └── fold_0/
     └── checkpoint_final/
         ├── state.json
@@ -155,34 +149,14 @@ mlx-model/
 | `arithmetic` | `native` | Or `torch-order-fp32`, for the profiles that require it |
 | `step_fraction` | `0.5` | Sliding-window step, in (0, 1] |
 | `use_mirroring` | `True` | Use the checkpoint's mirroring test-time augmentation |
-| `save_probabilities` | `False` | Also write class or region probabilities |
+| `save_probabilities` | `False` | Also write probabilities and their nnU-Net properties sidecar |
 
-Outputs, returned as absolute paths in `{"outputs": {...}, "details": {...}}`:
-
-| Role | File | Content |
-| --- | --- | --- |
-| `mask` | `mask.nii.gz` (`mask.nii` when `dataset.json` says so) | Label map with the input image's shape and geometry |
-| `probabilities` | `probabilities.npz` | Channel-first class or region probabilities (`save_probabilities` only) |
-| `probability_properties` | `probabilities.pkl` | nnU-Net properties for the probability grid (`save_probabilities` only) |
-
-Probabilities stay on the image reader's array grid; read them with their properties
-sidecar. As in nnU-Net, requesting probabilities makes class models take the argmax after
-float32 softmax rather than of the logits, so near ties can segment differently.
-`details` holds the `dataset.json` label table, `output_kind` (`binary_mask` or
-`label_map`), the selected options, checkpoint signatures and timings. The runner does
-not expose cascade stages; use the CLI's `--previous-stage`.
-
-Errors are [medmlx-core](https://github.com/MedMLX/medmlx/tree/main/packages/core) types,
-each chaining the package's `ContractError`: `InvalidInputError` for bad images, options
-or existing outputs; `AssetNotReadyError` for a missing, malformed or mismatched model
-folder; `MissingDependencyError` when MLX 0.32.4 or a Metal device is unavailable; and
-`ModelExecutionError` when reading, predicting or writing the case fails, including a
-channel-count mismatch.
+The result is `{"outputs": {...}, "details": {...}}`. `outputs["mask"]` is a label map
+on the input image's grid. Bad inputs raise `InvalidInputError`, a missing or
+mismatched model folder raises `AssetNotReadyError`, and failures while running raise
+`ModelExecutionError`.
 
 ### Command line
-
-Download the published liver model with `hf`, included by the runtime's
-`medmlx-core` dependency, then predict:
 
 ```sh
 hf download MedMLX/nnunet-liver-mlx \
@@ -197,29 +171,17 @@ nnunet-mlx model predict \
   --output-prefix predictions/case
 ```
 
-Published MLX bundles already contain the converted weights. The model cards
-describe each bundle's files and terms.
-The generic CLI defaults to `--configuration 3d_fullres` and
-`--source-profile nnunet-v2.8.1-default`. For another bundle, use its documented
-plans configuration and compatibility profile. `conversion.json` is optional
-export metadata; inference does not require or read it.
+`hf` comes with the runtime. Pass one `--input` per modality in channel order. Without
+`--fold`, every numeric fold is ensembled; `--fold all` selects `fold_all`.
+`--previous-stage` supplies a cascade's previous-stage segmentation. The other
+`nnunet-mlx model` commands:
 
-Pass one `--input` per modality in channel order. Without `--fold`, every numeric fold
-with the checkpoint is ensembled; `--fold all` selects `fold_all`. `--previous-stage`
-supplies a cascade's previous-stage segmentation. Every command takes `--help`, and
-`--json` prints machine-readable results.
+- `predict-folder` predicts a folder of cases; `--continue-existing` skips finished ones.
+- `ensemble` averages saved probabilities from several prediction folders.
+- `apply-postprocessing` applies a released `postprocessing.pkl`, as
+  `nnUNetv2_apply_postprocessing` does.
 
-- `nnunet-mlx model predict-folder` predicts a dataset folder. `--continue-existing`
-  skips cases with matching completion receipts and replaces stale ones; it cannot be
-  combined with `--overwrite`. Receipts compare file size and modification time.
-- `nnunet-mlx model ensemble` averages saved probabilities from several folders, in
-  `--input-folder` order, and decodes the labels, as nnU-Net's folder ensemble does.
-  Save predictions with `--save-probabilities` first, and pass `--plans-json` and
-  `--dataset-json` from the model folder. Every folder must hold the same `.npz` cases,
-  each with its `.pkl` sidecar, on the same grid.
-- `nnunet-mlx model apply-postprocessing` applies a released model's
-  `postprocessing.pkl` to exported segmentations, as `nnUNetv2_apply_postprocessing`
-  does. Prediction never applies it automatically.
+Every command takes `--help`, and `--json` prints machine-readable results.
 
 ### Supported configurations
 
@@ -231,30 +193,17 @@ supplies a cascade's previous-stage segmentation. Every command takes `--help`, 
 | Inference | Gaussian sliding window, mirroring, fold and configuration ensembles, probability export |
 | Plans | nnU-Net v2.8.1 `plans.json` and `dataset.json`, class and region heads |
 
-There is no PyTorch, CPU or other fallback: unsupported architectures, plan fields,
-checkpoints and inputs fail with an error. `dataset.json` must define `channel_names`.
-Labels must be consecutive non-negative integers or ASCII decimal strings; boolean,
-fractional, padded and Unicode values are rejected even where upstream's `int()` accepts
-them.
-The MedMLX runners and the CLI's `predict` and `predict-folder` compute the same thing:
-uncompiled models, with sliding windows and folds accumulated in float16 as nnU-Net v2.8.1
-does. `ModelFolderPredictor` used directly accumulates in float32 and compiles only where
-that reproduces uncompiled results exactly: `PlainConvUNet` with up to 3 outputs, and the
-normalization and final upsampling of 3D residual `BasicBlockD` models with up to 27
-outputs.
-
-`--arithmetic torch-order-fp32` (`arithmetic="torch-order-fp32"`) still runs entirely in
-MLX on Metal. It selects local kernels that sum float32 values in the pinned PyTorch CPU
-order, which some released models need to reproduce their reference labels exactly. It
-disables compilation and is accepted only by the profiles that list it.
+Anything else fails with an error; there is no PyTorch or CPU fallback.
 
 ### Compatibility profiles
 
-Models trained with `nnUNetTrainer` or a variant that builds the network from the plans use the default profile. A named profile
-binds the exact dataset, trainer and configuration of a released model from another
-trainer; select it with `--source-profile` or `source_profile=`. Loading checks each
-checkpoint's trainer, configuration and plans against the selected profile. Profiles
-cover inference only, not training or segmentation quality.
+Models trained with `nnUNetTrainer` or a variant that builds the network from the plans
+use the default profile. Released models from other trainers need the profile for their
+exact dataset, trainer and configuration, selected with `--source-profile` or
+`source_profile=`. Profiles marked `torch-order-fp32` also need
+`--arithmetic torch-order-fp32`. Loading checks each checkpoint's trainer, configuration
+and plans against the selected profile. Profiles cover inference only, not training or
+segmentation quality.
 
 | Profile | Architecture | Configuration | Notes |
 | --- | --- | --- | --- |
@@ -271,15 +220,12 @@ cover inference only, not training or segmentation quality.
 | `prostate-mrl-no-mirroring` | As released | `3d_fullres` | Prostate MR-Linac (`nnUNetTrainerNoMirroring`) |
 
 ✓ marks profiles whose model inference has been compared with the upstream reference on
-Metal for a limited set of cases. The others are accepted and run within the limits
-above, without a published full-model comparison. The original TotalSegmentator
-`v2.0.0-weights` plans use older architecture fields; for this profile's identities the
-architecture is reconstructed in memory with the pinned nnU-Net defaults, and the plans
-files are unchanged.
+Metal for a limited set of cases.
 
 ### Python API
 
-The names exported from `nnunet_mlx` are the supported Python API:
+The names exported from `nnunet_mlx` are the supported Python API; other modules may
+change between releases.
 
 ```python
 from nnunet_mlx import ModelFolderPredictor, load_model_bundle
@@ -292,20 +238,18 @@ result = predictor.predict_case(
 print(result.metrics)  # synchronized timings, tile counts and processed shapes
 ```
 
-`read_conversion_manifest` optionally validates `conversion.json` and its payload files
-for inspection; inference does not call it. Unsupported inputs raise `ContractError`.
-Other modules are internal and may change between releases.
+`ModelFolderPredictor` accumulates sliding windows in float32, while the runners and the
+CLI accumulate in float16 as nnU-Net does, so their outputs can differ slightly.
 
-### Untrusted files
+Output files, error types, accumulation and the `.pkl` loader are described in the
+[technical notes](https://github.com/MedMLX/nnunet-mlx/blob/main/docs/technical.md).
 
-Inference loads safetensors weights, never PyTorch `.pth` checkpoints. nnU-Net's `.pkl`
-sidecars (case properties and probability metadata) are read by a restricted loader that
-accepts plain Python containers and non-object NumPy metadata up to 64 MiB, and rejects
-executable globals, extension and persistent-ID opcodes, object arrays, recursion and
-trailing data. A released `postprocessing.pkl` may hold one payload up to 1 MiB naming
-the one supported upstream postprocessing function. These checks cover structure, not
-provenance: use model folders and `.npz`/`.pkl` pairs only from producers you trust.
-Report vulnerabilities through the
+### Security
+
+Weights load from safetensors, never PyTorch `.pth` checkpoints, and nnU-Net `.pkl`
+sidecars go through a restricted loader. Those checks cover structure, not provenance:
+use model folders and probability files only from producers you trust. Report
+vulnerabilities through the
 [MedMLX private reporting form](https://github.com/MedMLX/medmlx/security/advisories/new),
 not a public issue.
 

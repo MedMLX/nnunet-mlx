@@ -1,5 +1,89 @@
 # Technical notes
 
+## Accumulation, compilation and arithmetic
+
+The MedMLX runners and the CLI's `predict` and `predict-folder` compute the same thing:
+uncompiled models, with sliding windows and folds accumulated in float16 as nnU-Net v2.8.1
+does. `ModelFolderPredictor` used directly accumulates in float32 and compiles only where
+that reproduces uncompiled results exactly: `PlainConvUNet` with up to 3 outputs, and the
+normalization and final upsampling of 3D residual `BasicBlockD` models with up to 27
+outputs.
+
+`--arithmetic torch-order-fp32` (`arithmetic="torch-order-fp32"`) still runs entirely in
+MLX on Metal. It selects local kernels that sum float32 values in the pinned PyTorch CPU
+order, which some released models need to reproduce their reference labels exactly. It
+disables compilation. Profiles that list it reject any other arithmetic, and no other
+profile accepts it.
+
+## Compatibility profiles
+
+Loading checks each checkpoint's trainer, configuration and plans against the selected
+profile. Profiles cover inference only, not training or segmentation quality. Profiles
+without a ✓ in the README are accepted and run within the supported configurations,
+without a published full-model comparison.
+
+The original TotalSegmentator `v2.0.0-weights` plans use older architecture fields. For
+the `totalsegmentator-v2-ct` identities the architecture is reconstructed in memory with
+the pinned nnU-Net defaults, and the plans files are unchanged.
+
+## Model folder contract
+
+`dataset.json` must define `channel_names`. Labels must be consecutive non-negative
+integers or ASCII decimal strings; boolean, fractional, padded and Unicode values are
+rejected even where upstream's `int()` accepts them. `conversion.json` is optional export
+metadata: inference does not read it, and `read_conversion_manifest` validates it and its
+payload files only for inspection.
+
+`details.weights_revision` records the downloaded Hugging Face commit, or `null` for a
+folder without a MedMLX download record.
+
+## Outputs
+
+| Role | File | Content |
+| --- | --- | --- |
+| `mask` | `mask.nii.gz` (`mask.nii` when `dataset.json` says so) | Label map with the input image's shape and geometry |
+| `probabilities` | `probabilities.npz` | Channel-first class or region probabilities (`save_probabilities` only) |
+| `probability_properties` | `probabilities.pkl` | nnU-Net properties for the probability grid (`save_probabilities` only) |
+
+Probabilities stay on the image reader's array grid; read them with their properties
+sidecar. As in nnU-Net, requesting probabilities makes class models take the argmax after
+float32 softmax rather than of the logits, so near ties can segment differently.
+`details` holds the `dataset.json` label table, `output_kind` (`binary_mask` or
+`label_map`), the selected options, checkpoint signatures and timings. The Python runner
+does not expose cascade stages; use the CLI's `--previous-stage`.
+
+Errors are [medmlx-core](https://github.com/MedMLX/medmlx/tree/main/packages/core) types,
+each chaining the package's `ContractError`: `InvalidInputError` for bad images, options
+or existing outputs; `AssetNotReadyError` for a missing, malformed or mismatched model
+folder; `MissingDependencyError` when the pinned MLX or a Metal device is unavailable; and
+`ModelExecutionError` when reading, predicting or writing the case fails, including a
+channel-count mismatch.
+
+## Folder prediction, ensembling and postprocessing
+
+`predict-folder --continue-existing` skips cases with matching completion receipts and
+replaces stale ones; it cannot be combined with `--overwrite`. Receipts compare file size
+and modification time.
+
+`ensemble` averages saved probabilities in `--input-folder` order and decodes the labels,
+as nnU-Net's folder ensemble does. Save predictions with `--save-probabilities` first and
+pass `--plans-json` and `--dataset-json` from the model folder. Every folder must hold the
+same `.npz` cases, each with its `.pkl` sidecar, on the same grid.
+
+`apply-postprocessing` applies a released model's `postprocessing.pkl` to exported
+segmentations, as `nnUNetv2_apply_postprocessing` does. Prediction never applies it
+automatically.
+
+## Untrusted files
+
+Inference loads safetensors weights, never PyTorch `.pth` checkpoints. nnU-Net's `.pkl`
+sidecars (case properties and probability metadata) are read by a restricted loader that
+accepts plain Python containers and non-object NumPy metadata up to 64 MiB, and rejects
+executable globals, extension and persistent-ID opcodes, object arrays, recursion and
+trailing data. A released `postprocessing.pkl` may hold one payload up to 1 MiB naming
+the one supported upstream postprocessing function. These checks cover structure, not
+provenance.
+
 ## Liver 3d_fullres inference speed (Apple M5 Max, MLX 0.32.4)
 
 Measured on an Apple M5 Max (40-core GPU, 128 GB) with MLX 0.32.4 on Metal,
