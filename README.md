@@ -21,6 +21,8 @@ Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
 | :--- | :--- |
 | NIfTI channels | Segmentation and optional probabilities |
 
+Weights: 125 MB (`nnunet-liver`), 410 MB (`nnunet-pancreas`), 628 MB (`nnunet-brats2021`) and 2.0 GB (`nnunet-autopet`) downloads. Peak MLX memory: 8.9 GB for a 768×768×101 abdominal CT with `nnunet-liver`, 14.5 GB for the same CT with `nnunet-pancreas`, 7.4 GB for a 240×240×155 four-sequence brain MRI with `nnunet-brats2021` and 4.8 GB for a 400×400×284 whole-body PET/CT with `nnunet-autopet`.
+
 ## Use with MedMLX
 
 The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this package. It installs this runtime, downloads published weights on first use (MRSegmentator needs a local `weights_path`), and lets an AI agent describe, check and run `nnunet-liver`, `nnunet-pancreas`, `nnunet-brats2021`, `nnunet-autopet`, `siam` and `mrsegmentator` for you.

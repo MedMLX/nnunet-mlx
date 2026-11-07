@@ -20,6 +20,8 @@ LIVER = {
     "id": "nnunet-liver", "label": "nnU-Net liver CT", "task": "segmentation",
     "readiness": "nnunet_mlx.medmlx:readiness",
     "run": "nnunet_mlx.named_models:liver",
+    # Measured MLX peak for a 768x768x101 abdominal CT; larger inputs need more.
+    "peak_memory_gb": 9.0,
     "summary": "Liver and liver cancer segmentation of one CT volume.",
     "labels": {"1": "liver", "2": "cancer"},
 }
@@ -27,6 +29,8 @@ AUTOPET = {
     "id": "nnunet-autopet", "label": "nnU-Net AutoPET II", "task": "segmentation",
     "readiness": "nnunet_mlx.medmlx:readiness",
     "run": "nnunet_mlx.named_models:autopet",
+    # Measured MLX peak for a 400x400x284 whole-body PET/CT; larger inputs need more.
+    "peak_memory_gb": 4.8,
     "summary": "Tumor lesion segmentation of co-registered CT and SUV PET volumes.",
     "labels": {"1": "tumor"},
 }
@@ -34,6 +38,8 @@ PANCREAS = {
     "id": "nnunet-pancreas", "label": "Pancreas segmentation", "task": "segmentation",
     "readiness": "nnunet_mlx.medmlx:readiness",
     "run": "nnunet_mlx.named_models:pancreas",
+    # Measured MLX peak for a 768x768x101 abdominal CT with mirroring; larger inputs need more.
+    "peak_memory_gb": 14.5,
     "summary": "PancCTMultiTalentV2 pancreas and cancer segmentation on Metal.",
     "labels": {"1": "pancreas", "2": "cancer"},
 }
@@ -41,6 +47,8 @@ BRATS = {
     "id": "nnunet-brats2021", "label": "nnU-Net BraTS 2021", "task": "segmentation",
     "readiness": "nnunet_mlx.medmlx:readiness",
     "run": "nnunet_mlx.named_models:brats",
+    # Measured MLX peak for a 240x240x155 four-sequence MRI; larger inputs need more.
+    "peak_memory_gb": 7.5,
     "summary": "Zenodo 11582627 Dataset002_BRATS19 with its original BAMF labels.",
     "labels": {"1": "edema", "2": "nonenhancing", "3": "empty", "4": "enhancing"},
 }
