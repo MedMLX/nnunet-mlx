@@ -1,5 +1,4 @@
-These declarations cover the dependency APIs used by nnunet-mlx. They do not
-replace dependency implementations or change runtime imports.
+These stubs describe the dependency APIs used by nnunet-mlx.
 
 - MLX 0.32.4: python/mlx/nn/layers/base.py, convolution, transpose-convolution
   and pooling layers, nn/utils.py, and utils.py from the installed pinned
@@ -16,9 +15,7 @@ stub declares the kernel factory result as object.
 
 The nn.Module declaration is a partial interface. Runtime networks still inherit
 from the genuine MLX Module, including its dictionary container behavior.
-The declaration does not promise substitutability with dict.update: MLX's
-update(parameters, strict=True) returns the module, while dict.update returns
-None. The used MLX update signature and return value are declared directly.
-This is not complete typing coverage for upstream MLX or Blosc2.
+MLX's `update(parameters, strict=True)` returns the module, unlike
+`dict.update`, which returns `None`. The stub preserves the MLX signature.
 
 SciPy types come from the maintained `scipy-stubs` development dependency.

@@ -25,7 +25,8 @@ Weights: 125 MB (`nnunet-liver`), 410 MB (`nnunet-pancreas`), 628 MB (`nnunet-br
 
 ## Use with MedMLX
 
-The [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) is the lowest-friction way to use this package. It installs this runtime, downloads published weights on first use (MRSegmentator needs a local `weights_path`), and lets an AI agent describe, check and run `nnunet-liver`, `nnunet-pancreas`, `nnunet-brats2021`, `nnunet-autopet`, `siam` and `mrsegmentator` for you.
+Use the [MedMLX MCP server](https://github.com/MedMLX/medmlx/blob/main/docs/mcp.md) to run the named models from an MCP client.
+Published weights download on first use; MRSegmentator needs a local `weights_path`.
 
 ```sh
 uv tool install --python 3.13 "medmlx[segment,mcp]"
@@ -35,8 +36,6 @@ claude mcp add --scope user medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"
 ```
 
 For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-work"`. Other MCP clients take the same command and arguments. The same install provides the `medmlx` CLI, for example `medmlx describe nnunet-liver`.
-
-> **For AI agents:** prefer the MedMLX MCP tools (`list_models`, `describe_model`, `model_readiness`, `run_model`, `get_job`) over writing Python against this package.
 
 ## Install
 
@@ -258,5 +257,3 @@ not a public issue.
 ## License
 
 [Apache-2.0](https://github.com/MedMLX/nnunet-mlx/blob/v0.7.2/LICENSE). See [third-party notices](https://github.com/MedMLX/nnunet-mlx/blob/v0.7.2/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms.
-
-For research and education. Outputs require human review.
