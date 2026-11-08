@@ -77,3 +77,38 @@ def test_axis_gather_matches_installed_scipy_half_pixel_mapping(axis: int) -> No
                 array, coordinate_map(shape, target_shape), order=0, mode="nearest",
             )
             np.testing.assert_array_equal(nearest_axis_resize(array, target_shape), expected)
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
+@pytest.mark.parametrize(
+    ("order", "order_z", "force_separate_z"),
+    [(1, 0, False), (3, 0, None), (1, 0, True), (1, 1, True), (3, 1, True)],
+)
+def test_float_resampling_matches_pinned_nnunet_bitwise(
+    dtype: type[np.float16] | type[np.float32],
+    order: int,
+    order_z: int,
+    force_separate_z: bool | None,
+) -> None:
+    """Interpolate in float64 and round once to the input dtype, as upstream does.
+
+    Half input is what nnU-Net's float16 accumulation hands to restoration; the
+    rounding back to float16 decides near-tie labels. An interpolating separate
+    axis must not round the in-plane pass first.
+    """
+    from nnunet_mlx.data.resampling import resample_probabilities_or_data
+
+    source = import_module("nnunetv2.preprocessing.resampling.default_resampling")
+    data = np.random.default_rng(3).normal(size=(3, 7, 20, 22)).astype(dtype)
+    arguments = ((13, 31, 17), (5.0, 1.0, 1.0), (1.0, 0.7, 1.3))
+    expected = source.resample_data_or_seg_to_shape(
+        data, *arguments, is_seg=False, order=order, order_z=order_z,
+        force_separate_z=force_separate_z,
+    )
+    actual = resample_probabilities_or_data(
+        data, *arguments,
+        ResamplingContract("resample_data_or_seg_to_shape", order, order_z, force_separate_z),
+    )
+    assert expected.dtype == dtype
+    np.testing.assert_array_equal(actual, np.asarray(expected, dtype=np.float32))

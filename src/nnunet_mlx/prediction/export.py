@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 type FloatArray = npt.NDArray[np.float32]
 
 # Bump only when prediction, export, or continuation equivalence changes.
-PREDICTION_CONTRACT_VERSION = 3
+PREDICTION_CONTRACT_VERSION = 4
 COMPLETION_RECEIPT_SCHEMA_VERSION = 3
 
 

@@ -57,6 +57,12 @@ def resample_probabilities_or_data(
     interpolation. No anti-aliasing is applied; an unchanged shape still casts to FP32.
     The function name selects spline interpolation or the Torch sampling grid.
     A cast or interpolation producing non-finite values raises ``ContractError``.
+
+    Spline interpolation is computed in float64 and rounded once to the input's
+    precision, as upstream stores it into a buffer of the input dtype: float16
+    logits from nnU-Net's half-precision accumulation come back rounded to
+    float16 (returned as float32), which decides near-tie labels. The Torch
+    resampler interpolates in float32 for any input, so it does not round to half.
     """
 
     values = np.asarray(data)
@@ -81,6 +87,7 @@ def resample_probabilities_or_data(
         force=contract.force_separate_z,
         threshold=contract.separate_z_anisotropy_threshold,
     )
+    output_dtype = np.float16 if values.dtype == np.float16 else np.float32
     if contract.function_name == "resample_torch_fornnunet":
         result = _resample_torch(values, target_shape, axis=axis, contract=contract, is_seg=False)
     elif separate_z:
@@ -92,10 +99,14 @@ def resample_probabilities_or_data(
             axis=axis,
             order=contract.order,
             order_z=contract.order_z,
+            dtype=output_dtype,
         )
     else:
         result = np.stack(
-            [_resize_channel(channel, target_shape, order=contract.order) for channel in values]
+            [
+                _resize_channel(channel, target_shape, order=contract.order, dtype=output_dtype)
+                for channel in values
+            ]
         )
     if not np.isfinite(result).all():
         raise ContractError("resampling produced non-finite values")
@@ -262,25 +273,27 @@ def _resample_separate_z(
     axis: int,
     order: int,
     order_z: int,
-) -> FloatArray:
+    dtype: type[np.float16] | type[np.float32] = np.float32,
+) -> npt.NDArray[np.float16 | np.float32]:
     """Resample ``(C, X, Y, Z)`` data in-plane slice by slice, then along ``axis``.
 
     The low-resolution ``axis`` is kept at its source size during the in-plane
     pass and only resized afterwards with ``order_z``, matching nnU-Net's
-    separate-z strategy for anisotropic spacing. Returns float32.
+    separate-z strategy for anisotropic spacing. As upstream, the in-plane result
+    stays float64 and is rounded to ``dtype`` once, after the out-of-plane pass.
     """
     source_shape = tuple(int(value) for value in data.shape[1:])
     in_plane_axes = tuple(index for index in range(3) if index != axis)
     in_plane_shape = tuple(new_shape[index] for index in in_plane_axes)
     intermediate_shape = list(new_shape)
     intermediate_shape[axis] = source_shape[axis]
-    result = np.empty((len(data), *new_shape), dtype=np.float32)
+    result = np.empty((len(data), *new_shape), dtype=dtype)
     for channel_index, channel in enumerate(data):
-        # Each resized plane is already float32; widening it adds no information.
-        intermediate = np.empty(tuple(intermediate_shape), dtype=np.float32)
+        # Rounding planes before an interpolating out-of-plane pass would round twice.
+        intermediate = np.empty(tuple(intermediate_shape), dtype=np.float64)
         for slice_index in range(source_shape[axis]):
             source_slice = np.take(channel, slice_index, axis=axis)
-            resized = _resize_channel(source_slice, in_plane_shape, order=order)
+            resized = _resize_channel(source_slice, in_plane_shape, order=order, dtype=np.float64)
             selector: list[slice | int] = [slice(None)] * 3
             selector[axis] = slice_index
             intermediate[tuple(selector)] = resized
@@ -288,6 +301,7 @@ def _resample_separate_z(
             intermediate,
             new_shape,
             order=order_z,
+            dtype=dtype,
         )
     return result
 
@@ -367,18 +381,20 @@ def resize_out_of_plane(
     new_shape: tuple[int, int, int],
     *,
     order: int,
-) -> FloatArray:
-    """Resize a 3-D intermediate to ``new_shape`` as float32 with nearest boundaries.
+    dtype: type[np.float16] | type[np.float32] = np.float32,
+) -> npt.NDArray[np.float16 | np.float32]:
+    """Resize a 3-D intermediate to ``new_shape`` as ``dtype`` with nearest boundaries.
 
     Order zero uses nearest-axis indexing and permits at most one changed axis;
-    higher orders use the half-pixel coordinate map and SciPy interpolation.
+    higher orders use the half-pixel coordinate map and SciPy interpolation. An
+    unchanged shape is only cast, as upstream skips this pass.
     """
-    if order == 0:
-        return np.asarray(nearest_axis_resize(array, new_shape), dtype=np.float32)
+    if order == 0 or array.shape == new_shape:
+        return np.asarray(nearest_axis_resize(array, new_shape), dtype=dtype)
     coordinates = coordinate_map(array.shape, new_shape)
     return np.asarray(
         _map_coordinates()(array, coordinates, order=order, mode="nearest"),
-        dtype=np.float32,
+        dtype=dtype,
     )
 
 
@@ -431,17 +447,26 @@ def _resize_channel(
     shape: Sequence[int],
     *,
     order: int,
-) -> FloatArray:
-    """Resize one 2-D or 3-D channel to float32 with edge padding, no anti-aliasing."""
+    dtype: type[np.float16] | type[np.float32] | type[np.float64] = np.float32,
+) -> npt.NDArray[np.float16 | np.float32 | np.float64]:
+    """Resize one 2-D or 3-D channel to ``dtype`` with edge padding, no anti-aliasing.
+
+    SciPy interpolates in float64 and returns the input's float type (float32 for
+    half input), so anything but float32 to float32 runs on a float64 copy; the
+    cast to ``dtype`` is then the only rounding, as in upstream's float64 path.
+    """
+    values = np.asarray(channel)
+    if not (values.dtype == np.float32 and dtype is np.float32):
+        values = np.asarray(values, dtype=np.float64)
     return np.asarray(
         _resize()(
-            channel,
+            values,
             tuple(shape),
             order=order,
             mode="edge",
             anti_aliasing=False,
         ),
-        dtype=np.float32,
+        dtype=dtype,
     )
 
 
@@ -451,9 +476,13 @@ def resize_plane(
     *,
     order: int,
 ) -> FloatArray:
-    """Resize one in-plane slice with the pinned order-N interpolation."""
+    """Resize one in-plane slice with the pinned order-N interpolation, as float32.
 
-    return _resize_channel(plane, shape, order=order)
+    Half-precision planes are rounded to float16 first, as upstream does.
+    """
+
+    dtype = np.float16 if np.asarray(plane).dtype == np.float16 else np.float32
+    return np.asarray(_resize_channel(plane, shape, order=order, dtype=dtype), dtype=np.float32)
 
 
 def _resize_segmentation(

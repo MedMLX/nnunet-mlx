@@ -13,6 +13,7 @@ import numpy.typing as npt
 from nnunet_mlx.data.preprocessing import preprocess_raw_case
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.prediction.export import restore_device_segmentation, restore_prediction
+from nnunet_mlx.prediction.inference import device_logits_to_host
 from nnunet_mlx.prediction.sliding_window import predict_labels
 from nnunet_mlx.storage.imageio import label_dtype, resolve_image_reader
 
@@ -118,7 +119,7 @@ def _restored_ensemble_labels(
     logits = predictor.predictor.predict_device_logits_from_preprocessed_data(data)
     restored = restore_device_segmentation(logits, properties, bundle.plans, bundle.semantics)
     if restored is None:
-        host = np.ascontiguousarray(np.moveaxis(np.asarray(logits, dtype=np.float32), -1, 0))
+        host = device_logits_to_host(logits)
         del logits
         restored = restore_prediction(
             host, properties, bundle.plans, bundle.semantics, return_probabilities=False,

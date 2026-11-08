@@ -13,7 +13,6 @@ from time import perf_counter
 from typing import TYPE_CHECKING
 
 import numpy as np
-import numpy.typing as npt
 
 from nnunet_mlx.contracts import parse_integer
 from nnunet_mlx.errors import ContractError
@@ -29,7 +28,11 @@ from nnunet_mlx.prediction.export import (
     restore_device_segmentation,
     restore_prediction,
 )
-from nnunet_mlx.prediction.inference import ArrayPredictor
+from nnunet_mlx.prediction.inference import (
+    ArrayPredictor,
+    LogitArray,
+    device_logits_to_host,
+)
 from nnunet_mlx.prediction.io import (
     PreparedPredictionInput,
     prediction_input_signature,
@@ -628,7 +631,7 @@ class ModelFolderPredictor:
         *,
         save_probabilities: bool,
         host_logits: bool,
-    ) -> tuple[npt.NDArray[np.float32] | None, RestoredPrediction | None]:
+    ) -> tuple[LogitArray | None, RestoredPrediction | None]:
         """Return host logits, or labels restored without leaving Metal.
 
         Label-only 3-D class predictions keep fold logits on Metal through
@@ -648,13 +651,13 @@ class ModelFolderPredictor:
         )
         if restored is not None:
             return None, restored
-        host = np.asarray(device_logits, dtype=np.float32)
+        host = device_logits_to_host(device_logits)
         del device_logits
-        return np.ascontiguousarray(np.moveaxis(host, -1, 0)), None
+        return host, None
 
     def _export(
         self,
-        logits: npt.NDArray[np.float32] | None,
+        logits: LogitArray | None,
         restored: RestoredPrediction | None,
         prepared: PreparedPredictionInput,
         output_prefix: str | Path,
@@ -692,7 +695,7 @@ class ModelFolderPredictor:
     def _submit_export(
         self,
         executor: ProcessPoolExecutor,
-        logits: npt.NDArray[np.float32] | None,
+        logits: LogitArray | None,
         restored: RestoredPrediction | None,
         prepared: PreparedPredictionInput,
         output_prefix: Path,

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 type HostArray = npt.NDArray[np.generic]
 type FloatArray = npt.NDArray[np.float32]
+type LogitArray = npt.NDArray[np.float16] | npt.NDArray[np.float32]
 
 
 def average_fold_logits(
@@ -30,7 +31,7 @@ def average_fold_logits(
     mirroring_axes: Sequence[int] = (),
     step_fraction: float = 0.5,
     accumulation: str = "float32",
-) -> FloatArray:
+) -> LogitArray:
     """Average per-fold sliding-window logits, following upstream's ensemble arithmetic.
 
     Args:
@@ -44,10 +45,11 @@ def average_fold_logits(
         accumulation: ``"float32"`` or ``"nnunet-fp16"``; see ``predict_logits``.
 
     Returns:
-        Float32 ``(num_outputs, *spatial)`` logits: the fold sum divided by the number
-        of folds. With ``nnunet-fp16`` each fold is rounded to float16 before the
-        in-order sum and division, because upstream keeps half tensors through the
-        ensemble.
+        ``(num_outputs, *spatial)`` logits: the fold sum divided by the number of
+        folds. With ``nnunet-fp16`` each fold is rounded to float16 before the
+        in-order sum and division and the result stays float16, because upstream
+        keeps half tensors through the ensemble and its restoration rounds
+        resampled logits back to that dtype. Otherwise the result is float32.
 
     Raises:
         ContractError: If ``models`` is empty or any fold or the average is non-finite.
@@ -81,6 +83,8 @@ def average_fold_logits(
     total /= np.float32(len(models))
     if not np.isfinite(total).all():
         raise ContractError("fold averaging produced non-finite logits")
+    if upstream_fp16:
+        return np.asarray(total, dtype=np.float16)
     return np.asarray(total, dtype=np.float32)
 
 
@@ -94,11 +98,11 @@ def average_fold_device_logits(
     step_fraction: float = 0.5,
     accumulation: str = "float32",
 ) -> array:
-    """Average 3-D fold logits on Metal as channels-last `(*spatial,C)` float32.
+    """Average 3-D fold logits on Metal as channels-last `(*spatial,C)` arrays.
 
-    Values equal ``average_fold_logits`` transposed: folds are summed in order in
-    the accumulation dtype and divided in float32, then rounded back for
-    ``nnunet-fp16``. Later folds update the first fold's volume slab by slab.
+    Values and dtype equal ``average_fold_logits`` transposed: folds are summed in
+    order in the accumulation dtype and divided in float32, then rounded back to
+    float16 for ``nnunet-fp16``. Later folds update the first fold's volume slab by slab.
     Non-finite fold or averaged logits raise ``ContractError``.
     """
     from nnunet_mlx.prediction.sliding_window import (
@@ -131,15 +135,29 @@ def average_fold_device_logits(
             )
     if total is None:
         raise AssertionError("fold ensemble unexpectedly produced no logits")
-    result = total.astype(mx.float32)
+    result = total
     if len(models) > 1:
-        result = (result / mx.array(len(models), dtype=mx.float32)).astype(total.dtype)
-    result = result.astype(mx.float32)
+        result = (total.astype(mx.float32) / mx.array(len(models), dtype=mx.float32)).astype(
+            total.dtype
+        )
     finite = mx.all(mx.isfinite(result))
     mx.eval(result, finite)
     if not bool(finite.item()):
         raise ContractError("fold averaging produced non-finite logits")
     return result
+
+
+def device_logits_to_host(logits: array) -> LogitArray:
+    """Copy channels-last `(*spatial,C)` device logits to channel-first host logits.
+
+    Float16 logits stay float16: restoration rounds resampled values back to them.
+    """
+    from nnunet_mlx.runtime import import_mlx
+
+    mx, _ = import_mlx()
+    if logits.dtype == mx.float16:
+        return np.ascontiguousarray(np.moveaxis(np.asarray(logits, dtype=np.float16), -1, 0))
+    return np.ascontiguousarray(np.moveaxis(np.asarray(logits, dtype=np.float32), -1, 0))
 
 
 def _predict_model_logits(
@@ -277,8 +295,8 @@ class ArrayPredictor:
         self.step_fraction = step_fraction
         self.accumulation = accumulation
 
-    def predict_logits_from_preprocessed_data(self, data_channels_first: HostArray) -> FloatArray:
-        """Return fold-averaged host logits ``(num_outputs, *spatial)``."""
+    def predict_logits_from_preprocessed_data(self, data_channels_first: HostArray) -> LogitArray:
+        """Return fold-averaged host logits ``(num_outputs, *spatial)``, float16 for nnunet-fp16."""
         return average_fold_logits(
             self.models,
             data_channels_first,

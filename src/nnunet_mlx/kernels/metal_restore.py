@@ -28,7 +28,7 @@ _THREADGROUP_SIZE = 256
 if TYPE_CHECKING:
     from mlx.core import array
 
-_KERNEL_NAME = "nnunet_mlx_fused_restore_half_pixel_ds_v2"
+_KERNEL_NAME = "nnunet_mlx_fused_restore_half_pixel_ds_v3"
 _MAXIMUM_FUSED_MAGNITUDE = float(np.finfo(np.float32).max) / 16
 # This threshold includes cold compile and the small-workload crossover.
 MINIMUM_FUSED_CLASS_VOXELS = 500_000
@@ -49,6 +49,21 @@ inline DoubleSingle weighted_value(
     result = ds_multiply(result, weight_z);
     result = ds_multiply(result, weight_y);
     return ds_multiply(result, weight_x);
+}
+
+// Round to the nearest half, ties to even, as upstream's float64-to-float16
+// store does. Halfway points between halves are float32 values, so the low
+// part can change the result only when the high part lies exactly on one.
+inline float ds_round_to_half(DoubleSingle value) {
+    float high = value.high + value.low;
+    float low = value.low - (high - value.high);
+    float rounded = float(half(high));
+    float other = rounded + 2.0f * (high - rounded);
+    if (high != rounded && low != 0.0f && float(half(other)) == other
+            && (low > 0.0f) == (high > rounded)) {
+        return other;
+    }
+    return rounded;
 }
 """
 )
@@ -114,7 +129,7 @@ _FUSED_ARGMAX_SOURCE = r"""
         sum = ds_add(sum, weighted_value(logits[offset + i101], wz1, wy0, wx1));
         sum = ds_add(sum, weighted_value(logits[offset + i110], wz1, wy1, wx0));
         sum = ds_add(sum, weighted_value(logits[offset + i111], wz1, wy1, wx1));
-        float value = sum.high + sum.low;
+        float value = ROUND_TO_HALF ? ds_round_to_half(sum) : sum.high + sum.low;
         if (value > best) {
             best = value;
             label = ushort(channel);
@@ -141,8 +156,8 @@ def assess_fused_class_restore(
 ) -> FusedRestoreSupport:
     """Return the strict support decision without attempting the Metal kernel.
 
-    The supported case is finite float32 CXYZ class logits, order-1 interpolation,
-    and no separate-axis resampling when the shape changes. This checks numerical
+    The supported case is finite float32 or float16 CXYZ class logits, order-1
+    interpolation, and no separate-axis resampling when the shape changes. This checks numerical
     eligibility, not the workload-size threshold used for automatic dispatch.
     Invalid target shape, spacing, index range or non-finite logits raise
     ``ContractError`` rather than returning an ineligible result.
@@ -156,8 +171,8 @@ def assess_fused_class_restore(
         or any(int(value) < 1 for value in values.shape[1:])
     ):
         return FusedRestoreSupport(False, "fused restoration requires non-empty CXYZ logits")
-    if values.dtype != np.dtype(np.float32):
-        return FusedRestoreSupport(False, "fused restoration requires float32 logits")
+    if values.dtype not in (np.dtype(np.float32), np.dtype(np.float16)):
+        return FusedRestoreSupport(False, "fused restoration requires float32 or float16 logits")
     if int(values.shape[0]) > np.iinfo(np.uint16).max + 1:
         return FusedRestoreSupport(False, "fused restoration exceeds the uint16 label range")
     if contract.function_name != "resample_data_or_seg_to_shape" or contract.order != 1:
@@ -278,10 +293,12 @@ def resample_class_logits_argmax_metal(
 ) -> npt.NDArray[np.uint16]:
     """Run synchronized edge-clamped trilinear interpolation and argmax on Metal.
 
-    Input is finite float32 CXYZ with at most 65536 classes; ``new_shape`` is a
-    three-element target spatial shape. Returns a host uint16 target-grid array;
-    ties select the first class. This direct entry point does not apply spacing or
-    separate-axis policy, which callers must establish separately.
+    Input is finite float32 or float16 CXYZ with at most 65536 classes; ``new_shape``
+    is a three-element target spatial shape. Returns a host uint16 target-grid
+    array; ties select the first class. Interpolated float16 logits are rounded to
+    float16 before the argmax, as upstream's resampling of half logits does. This
+    direct entry point does not apply spacing or separate-axis policy, which
+    callers must establish separately.
     """
 
     values = np.asarray(logits)
@@ -290,9 +307,9 @@ def resample_class_logits_argmax_metal(
         values.ndim != 4
         or int(values.shape[0]) < 1
         or any(int(value) < 1 for value in values.shape[1:])
-        or values.dtype != np.float32
+        or values.dtype not in (np.dtype(np.float32), np.dtype(np.float16))
     ):
-        raise ContractError("fused restoration requires non-empty float32 CXYZ logits")
+        raise ContractError("fused restoration requires non-empty float32 or float16 CXYZ logits")
     if int(values.shape[0]) > np.iinfo(np.uint16).max + 1:
         raise ContractError("fused restoration exceeds the uint16 label range")
     if _finite_magnitude(values) > _MAXIMUM_FUSED_MAGNITUDE:
@@ -321,7 +338,7 @@ def resample_device_logits_argmax(
     new_spacing: Sequence[float],
     contract: ResamplingContract,
 ) -> npt.NDArray[np.uint16] | None:
-    """Restore labels from Metal-resident channels-last ``(X,Y,Z,C)`` float32 logits.
+    """Restore labels from Metal-resident channels-last ``(X,Y,Z,C)`` float32/16 logits.
 
     Returns ``None`` for unsupported dtype, non-scalar rank other than four, class
     count, magnitude, or resampling policy so the caller can use host restoration.
@@ -329,14 +346,19 @@ def resample_device_logits_argmax(
     performance threshold. Equal source and target shapes need
     no resampling, so identity interpolation reduces to first-maximum argmax
     without checking the resampling policy or spacing. The caller must supply
-    a nonempty array and has already rejected non-finite logits.
+    a nonempty array and has already rejected non-finite logits. Float16 logits
+    are rounded to float16 after interpolation, as on the host.
     """
     import mlx.core as core
 
     mx, _ = import_mlx()
     target_shape = _target_shape(new_shape)
     classes = int(logits.shape[-1])
-    if logits.ndim != 4 or logits.dtype != mx.float32 or classes > np.iinfo(np.uint16).max + 1:
+    if (
+        logits.ndim != 4
+        or logits.dtype not in (mx.float32, mx.float16)
+        or classes > np.iinfo(np.uint16).max + 1
+    ):
         return None
     source_shape = tuple(int(value) for value in logits.shape[:3])
     if source_shape != target_shape:
@@ -364,6 +386,7 @@ def _launch(
 ) -> array:
     """Launch fused class-logit resampling and label reduction for the target grid."""
     mx, _ = import_mlx()
+    round_to_half = logits.dtype == mx.float16
     source_shape = cast(
         "tuple[int, int, int]",
         tuple(int(value) for value in (logits.shape[:3] if channels_last else logits.shape[1:])),
@@ -376,7 +399,7 @@ def _launch(
     )
     return _metal_kernel()(
         inputs=[logits, parameters, *(mx.array(item) for item in coordinate_arrays)],
-        template=[("CHANNELS_LAST", channels_last)],
+        template=[("CHANNELS_LAST", channels_last), ("ROUND_TO_HALF", round_to_half)],
         grid=(output_size, 1, 1),
         threadgroup=(min(_THREADGROUP_SIZE, output_size), 1, 1),
         output_shapes=[target_shape],

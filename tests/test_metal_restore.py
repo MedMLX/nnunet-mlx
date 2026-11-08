@@ -17,7 +17,7 @@ SPACING = (1.0, 1.0, 1.0)
 
 
 def _device_channels_last(
-    logits: np.ndarray[tuple[int, ...], np.dtype[np.float32]],
+    logits: np.ndarray[tuple[int, ...], np.dtype[np.float16 | np.float32]],
     target_shape: tuple[int, int, int],
 ) -> np.ndarray[tuple[int, ...], np.dtype[np.uint16]] | None:
     """Run device restoration on channels-last logits, or return None if unsupported."""
@@ -30,7 +30,7 @@ def _device_channels_last(
 
 
 def _reference(
-    logits: np.ndarray[tuple[int, ...], np.dtype[np.float32]],
+    logits: np.ndarray[tuple[int, ...], np.dtype[np.float16 | np.float32]],
     target_shape: tuple[int, int, int],
 ) -> np.ndarray[tuple[int, ...], np.dtype[np.uint16]]:
     """Restore class logits using the materialized reference path."""
@@ -39,6 +39,7 @@ def _reference(
 
 
 @pytest.mark.metal
+@pytest.mark.parametrize("dtype", [np.float32, np.float16])
 @pytest.mark.parametrize(
     ("classes", "source_shape", "target_shape"),
     [
@@ -53,11 +54,17 @@ def test_fused_restore_matches_materialized_reference_across_shapes(
     classes: int,
     source_shape: tuple[int, int, int],
     target_shape: tuple[int, int, int],
+    dtype: type[np.float16] | type[np.float32],
 ) -> None:
-    """Compare fused class restoration with the reference across supported shapes."""
+    """Compare fused class restoration with the reference across supported shapes.
+
+    Float16 logits must round interpolated values to float16 before the argmax,
+    as the reference does; small logits make the resulting ties frequent.
+    """
+    scale = 0.01 if dtype is np.float16 else 1.0
     logits = np.random.default_rng(classes).normal(
-        size=(classes, *source_shape)
-    ).astype(np.float32)
+        scale=scale, size=(classes, *source_shape)
+    ).astype(dtype)
 
     result = resample_class_logits_argmax_metal(logits, target_shape)
     device = _device_channels_last(logits, target_shape)

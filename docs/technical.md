@@ -4,10 +4,12 @@
 
 The MedMLX runners and the CLI's `predict` and `predict-folder` compute the same thing:
 uncompiled models, with sliding windows and folds accumulated in float16 as nnU-Net v2.8.1
-does. `ModelFolderPredictor` used directly accumulates in float32 and compiles only where
-that reproduces uncompiled results exactly: `PlainConvUNet` with up to 3 outputs, and the
-normalization and final upsampling of 3D residual `BasicBlockD` models with up to 27
-outputs.
+does. The logits stay float16 into restoration, where spline resampling interpolates in
+float64 and rounds back to float16 before the softmax or argmax, again as nnU-Net does; at
+near ties the first class wins. `ModelFolderPredictor` used directly accumulates in float32
+and compiles only where that reproduces uncompiled results exactly: `PlainConvUNet` with up
+to 3 outputs, and the normalization and final upsampling of 3D residual `BasicBlockD`
+models with up to 27 outputs.
 
 `--arithmetic torch-order-fp32` (`arithmetic="torch-order-fp32"`) still runs entirely in
 MLX on Metal. It selects local kernels that sum float32 values in the pinned PyTorch CPU

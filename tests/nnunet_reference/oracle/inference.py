@@ -262,14 +262,14 @@ def run_fold_ensemble_parity(
     if total is None:
         raise AssertionError("fold ensemble oracle unexpectedly produced no logits")
     total /= np.float32(len(sources))
-    actual = average_fold_logits(
+    actual = np.asarray(average_fold_logits(
         tuple(candidates),
         values,
         patch_size=patch,
         num_outputs=spec.num_classes,
         mirroring_axes=mirror_axes,
         step_fraction=step_fraction,
-    )
+    ), dtype=np.float32)
     return ContractParityResult(
         arrays=(
             array_metrics(
