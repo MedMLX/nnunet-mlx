@@ -17,7 +17,7 @@ import os
 import tempfile
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import perf_counter
@@ -262,6 +262,32 @@ def run(
             including images that do not give the model's channel count.
     """
 
+    return _run(
+        weights_path=weights_path, image_paths=image_paths, output_dir=output_dir,
+        overwrite=overwrite, configuration=configuration, folds=folds,
+        checkpoint_name=checkpoint_name, source_profile=source_profile, arithmetic=arithmetic,
+        step_fraction=step_fraction, use_mirroring=use_mirroring,
+        save_probabilities=save_probabilities,
+    )
+
+
+def _run(
+    *,
+    prepared: _PreparedState | None = None,
+    weights_path: str,
+    image_paths: Sequence[str],
+    output_dir: str,
+    overwrite: bool = False,
+    configuration: str | None = None,
+    folds: Sequence[int | str] | None = None,
+    checkpoint_name: str = "checkpoint_final",
+    source_profile: str | None = None,
+    arithmetic: str = "native",
+    step_fraction: float = 0.5,
+    use_mirroring: bool = True,
+    save_probabilities: bool = False,
+) -> RunResult:
+    """Run the shared one-shot publication path, optionally using prepared state."""
     from nnunet_mlx.plans import read_json_object
     from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
 
@@ -322,22 +348,28 @@ def run(
 
     with _reported_as("dependency"):
         mx, _ = import_mlx()
-    mx.reset_peak_memory()
+    if prepared is None:
+        mx.reset_peak_memory()
     started = perf_counter()
-    with _reported_as("asset"):
-        bundle = load_model_bundle(
-            folder,
-            configuration=configuration,
-            folds=selected_folds,
-            checkpoint_name=checkpoint_name,
-            source_profile=source_profile,
-            arithmetic=arithmetic,
-        )
-    if not use_mirroring:
-        bundle = replace(bundle, mirroring_axes=())
-    model_load_s = perf_counter() - started
+    if prepared is None:
+        with _reported_as("asset"):
+            bundle = load_model_bundle(
+                folder,
+                configuration=configuration,
+                folds=selected_folds,
+                checkpoint_name=checkpoint_name,
+                source_profile=source_profile,
+                arithmetic=arithmetic,
+            )
+        if not use_mirroring:
+            bundle = replace(bundle, mirroring_axes=())
+        model_load_s = perf_counter() - started
+        with _reported_as("execution"):
+            case_predictor = predictor(bundle, step_fraction=float(step_fraction))
+    else:
+        bundle, case_predictor = prepared.bundle, prepared.predictor
+        model_load_s = 0.0
     with _reported_as("execution"):
-        case_predictor = predictor(bundle, step_fraction=float(step_fraction))
         output.mkdir(parents=True, exist_ok=True)
         # Predict into a private directory, then publish under the runner's output names.
         with tempfile.TemporaryDirectory(prefix=".nnunet-mlx-", dir=output) as staging:
@@ -389,3 +421,137 @@ def run(
     }
     return payload
 
+
+
+@dataclass(frozen=True)
+class _PreparedState:
+    """The only model state retained between cases of a prepared runner."""
+
+    bundle: ModelBundle
+    predictor: ModelFolderPredictor
+
+
+def _source_signature(
+    folder: Path, checkpoint_name: str,
+) -> tuple[tuple[str, int, int, int, int, int], ...]:
+    """Detect ordinary model/configuration edits without reading or hashing weights."""
+    paths = [folder / "plans.json", folder / "dataset.json"]
+    for checkpoint in sorted(folder.glob(f"fold_*/{checkpoint_name}")):
+        paths.extend((checkpoint / "state.json", checkpoint / "weights.safetensors"))
+    result: list[tuple[str, int, int, int, int, int]] = []
+    for path in paths:
+        try:
+            info = path.stat()
+        except OSError as error:
+            raise ContractError(f"Model source is unavailable: {path}") from error
+        result.append((str(path.relative_to(folder)), info.st_dev, info.st_ino,
+                       info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+    return tuple(result)
+
+
+@dataclass(frozen=True)
+class _Preparation:
+    """Immutable admitted model and inference choices for a prepared lifetime."""
+
+    folder: Path
+    configuration: str
+    folds: tuple[int | str, ...] | None
+    checkpoint_name: str
+    source_profile: str
+    arithmetic: str
+    step_fraction: float
+    use_mirroring: bool
+
+
+class PreparedModel:
+    """One fixed model/configuration reused for serial cases until explicitly closed.
+
+    Model files must remain unchanged for the cohort. Metadata signatures detect
+    ordinary replacements/edits before each case; start a new preparation after
+    changing weights or configuration. Inputs, predictions and output staging
+    belong to each call, and no per-case tensor is stored on this object.
+    Per-case ``model_load_s`` is zero; ``peak_memory_bytes`` covers preparation
+    through that case rather than resetting the MLX peak between cases.
+    """
+
+    def __init__(
+        self, *, weights_path: str, configuration: str = "3d_fullres",
+        folds: Sequence[int | str] | None = None, checkpoint_name: str = "checkpoint_final",
+        source_profile: str | None = None, arithmetic: str = "native",
+        step_fraction: float = 0.5, use_mirroring: bool = True,
+    ) -> None:
+        """Load and bind the selected model once; case destinations are supplied to run."""
+        from nnunet_mlx.model.folder import load_model_bundle
+        from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
+        from nnunet_mlx.runtime import import_mlx, runtime_info
+
+        self._options = _Preparation(
+            Path(weights_path).expanduser().absolute(), configuration,
+            None if folds is None else tuple(folds), checkpoint_name,
+            DEFAULT_INFERENCE_SOURCE_PROFILE if source_profile is None else source_profile,
+            arithmetic, step_fraction, use_mirroring,
+        )
+        options = self._options
+        with _reported_as("input"):
+            if Path(checkpoint_name).name != checkpoint_name or checkpoint_name in {".", ".."}:
+                raise ContractError("checkpoint_name must name a checkpoint directory")
+            parse_boolean(use_mirroring, name="use_mirroring")
+            step = parse_number(step_fraction, name="step_fraction")
+            if not 0 < step <= 1:
+                raise ContractError("step_fraction must be in (0, 1]")
+        with _reported_as("dependency"):
+            runtime_info()
+            mx, _ = import_mlx()
+        mx.reset_peak_memory()
+        with _reported_as("asset"):
+            self._signature = _source_signature(options.folder, checkpoint_name)
+            bundle = load_model_bundle(
+                options.folder, configuration=configuration, folds=options.folds,
+                checkpoint_name=checkpoint_name, source_profile=options.source_profile,
+                arithmetic=arithmetic,
+            )
+            if _source_signature(options.folder, checkpoint_name) != self._signature:
+                raise ContractError("Model files changed during preparation; prepare again")
+        if not use_mirroring:
+            bundle = replace(bundle, mirroring_axes=())
+        self._state: _PreparedState | None = _PreparedState(
+            bundle, predictor(bundle, step_fraction=step_fraction))
+
+    def run(
+        self, *, image_paths: Sequence[str], output_dir: str,
+        overwrite: bool = False, save_probabilities: bool = False,
+    ) -> RunResult:
+        """Run one case with the one-shot runner's geometry and publication checks."""
+        options = self._options
+        state = self._state
+        if state is None:
+            raise RuntimeError("Prepared model is closed")
+        with _reported_as("asset"):
+            if _source_signature(options.folder, options.checkpoint_name) != self._signature:
+                raise ContractError("Model files changed after preparation; prepare again")
+        return _run(
+            prepared=state, weights_path=str(options.folder), image_paths=image_paths,
+            output_dir=output_dir, overwrite=overwrite, save_probabilities=save_probabilities,
+            configuration=options.configuration, folds=options.folds,
+            checkpoint_name=options.checkpoint_name,
+            source_profile=options.source_profile, arithmetic=options.arithmetic,
+            step_fraction=options.step_fraction, use_mirroring=options.use_mirroring,
+        )
+
+    def close(self) -> None:
+        """Release model ownership; subsequent case calls are rejected."""
+        self._state = None
+
+
+def prepare(
+    *, weights_path: str, configuration: str = "3d_fullres",
+    folds: Sequence[int | str] | None = None, checkpoint_name: str = "checkpoint_final",
+    source_profile: str | None = None, arithmetic: str = "native", step_fraction: float = 0.5,
+    use_mirroring: bool = True,
+) -> PreparedModel:
+    """Prepare a fixed nnU-Net model for an explicitly bounded, serial cohort."""
+    return PreparedModel(
+        weights_path=weights_path, configuration=configuration, folds=folds,
+        checkpoint_name=checkpoint_name, source_profile=source_profile, arithmetic=arithmetic,
+        step_fraction=step_fraction, use_mirroring=use_mirroring,
+    )

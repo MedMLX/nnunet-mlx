@@ -20,6 +20,7 @@ LIVER = {
     "id": "nnunet-liver", "label": "nnU-Net liver CT", "task": "segmentation",
     "readiness": "nnunet_mlx.medmlx:readiness",
     "run": "nnunet_mlx.named_models:liver",
+    "cohort": "nnunet_mlx.named_models:prepare_liver",
     # Measured MLX peak for a 768x768x101 abdominal CT; larger inputs need more.
     "peak_memory_gb": 9.0,
     "summary": "Liver and liver cancer segmentation of one CT volume.",
@@ -304,3 +305,26 @@ def siam(
                 ) from error
     result["outputs"]["mask"] = target.resolve().as_posix()
     return result
+
+
+class LiverCohort:
+    """Prepared liver model with the named runner's case argument names."""
+
+    def __init__(self, prepared: medmlx.PreparedModel) -> None:
+        self._prepared = prepared
+
+    def run(self, *, image_path: str, output_dir: str, overwrite: bool = False) -> RunResult:
+        """Segment a CT using the model owned by this cohort."""
+        return self._prepared.run(image_paths=[image_path], output_dir=output_dir,
+                                  overwrite=overwrite)
+
+    def close(self) -> None:
+        """Release the prepared model."""
+        self._prepared.close()
+
+
+def prepare_liver(*, weights_path: str | None = None) -> LiverCohort:
+    """Load the named liver model once for MedMLX's explicit cohort protocol."""
+    folder = (weights_dir("nnunet-liver") if weights_path is None
+              else Path(weights_path).expanduser())
+    return LiverCohort(medmlx.prepare(weights_path=str(folder), configuration="3d_fullres"))

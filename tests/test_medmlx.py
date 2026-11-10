@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import pickle
+from collections.abc import Sequence
 from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
@@ -16,7 +18,10 @@ from nnunet_reference.runner_network import build_network
 
 from nnunet_mlx import medmlx, named_models
 from nnunet_mlx.model.factory import build_model_from_plans
+from nnunet_mlx.model.folder import load_model_bundle
 from nnunet_mlx.plans import PlansContract
+from nnunet_mlx.prediction.inference import ArrayPredictor
+from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
 from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
 from nnunet_mlx.runtime import import_mlx
 from nnunet_mlx.storage.checkpoint import (
@@ -158,6 +163,221 @@ def test_liver_runner_writes_label_map_on_the_input_grid(
     assert labels.shape == (10, 9, 7)
     assert set(np.unique(labels).tolist()) <= {0, 1}
     assert np.allclose(mask.affine, INPUT_AFFINE, rtol=0, atol=1e-6)
+
+
+@pytest.mark.metal
+def test_prepared_liver_cohort_matches_isolated_cases_and_bounds_model_memory(
+    case: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reuse loaded weights while keeping per-case geometry, errors and memory bounded."""
+    import mlx.core as mx
+
+    from nnunet_mlx.model import folder as model_folder
+
+    folder, source = case
+    isolated = named_models.liver(
+        image_path=str(source), output_dir=str(tmp_path / "isolated"), weights_path=str(folder))
+    expected = nib.load(isolated["outputs"]["mask"])
+    loads = 0
+    original_load = model_folder.load_model_bundle
+
+    def counted_load(
+        model_folder: str | Path, *, configuration: str, folds: Sequence[int | str] | None = None,
+        checkpoint_name: str = "checkpoint_final",
+        source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE, arithmetic: str = "native",
+    ) -> model_folder.ModelBundle:
+        nonlocal loads
+        loads += 1
+        return original_load(model_folder, configuration=configuration, folds=folds,
+                             checkpoint_name=checkpoint_name, source_profile=source_profile,
+                             arithmetic=arithmetic)
+
+    monkeypatch.setattr(model_folder, "load_model_bundle", counted_load)
+    prepared = named_models.prepare_liver(weights_path=str(folder))
+    active: list[int] = []
+    try:
+        for index in range(24):
+            result = prepared.run(image_path=str(source), output_dir=str(tmp_path / f"case{index}"))
+            actual = nib.load(result["outputs"]["mask"])
+            np.testing.assert_array_equal(np.asarray(actual.dataobj), np.asarray(expected.dataobj))
+            np.testing.assert_array_equal(actual.affine, expected.affine)
+            active.append(mx.get_active_memory())
+        with pytest.raises(InvalidInputError):
+            prepared.run(image_path=str(source), output_dir=str(tmp_path / "case0"))
+        with pytest.raises(InvalidInputError):
+            prepared.run(image_path=str(tmp_path / "missing.nii.gz"),
+                         output_dir=str(tmp_path / "missing"))
+        alias = tmp_path / "alias" / "mask.nii.gz"
+        alias.parent.mkdir()
+        source_before = source.read_bytes()
+        alias.write_bytes(source_before)
+        with pytest.raises(InvalidInputError):
+            prepared.run(image_path=str(alias), output_dir=str(alias.parent), overwrite=True)
+        assert alias.read_bytes() == source_before
+        assert loads == 1
+        # After warm-up the live MLX allocation must plateau rather than retain
+        # one input/prediction tree per case. Free allocator cache is separate.
+        assert max(active[4:]) <= min(active[4:]) + 64 * 1024
+    finally:
+        prepared.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        prepared.run(image_path=str(source), output_dir=str(tmp_path / "closed"))
+
+
+@pytest.mark.metal
+def test_prepared_configuration_and_folder_stay_fixed_after_caller_changes(
+    case: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relative preparation path and attached attributes cannot redirect admitted state."""
+    folder, source = case
+    monkeypatch.chdir(folder.parent)
+    prepared = medmlx.prepare(weights_path=folder.name, folds=[0], use_mirroring=False)
+    for name, value in (("configuration", "different"), ("step_fraction", 0.9)):
+        setattr(prepared, name, value)
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    try:
+        result = prepared.run(image_paths=[str(source)], output_dir=str(tmp_path / "fixed"))
+        assert result["details"]["configuration"] == "3d_fullres"
+        assert result["details"]["step_fraction"] == 0.5
+        assert result["details"]["folds"] == [0]
+        assert result["details"]["mirroring_axes"] == []
+    finally:
+        prepared.close()
+
+
+@pytest.mark.metal
+@pytest.mark.parametrize("changed", ["plans.json", "fold_0/checkpoint_final/weights.safetensors"])
+def test_prepared_model_rejects_source_changes_and_new_preparation_reloads(
+    case: tuple[Path, Path], tmp_path: Path, changed: str,
+) -> None:
+    """An ordinary metadata/weight edit cannot silently reuse a stale loaded model."""
+    from medmlx_core.errors import AssetNotReadyError
+
+    folder, source = case
+    prepared = medmlx.prepare(weights_path=str(folder))
+    try:
+        target = folder / changed
+        target.touch()
+        with pytest.raises(AssetNotReadyError, match="changed"):
+            prepared.run(image_paths=[str(source)], output_dir=str(tmp_path / "stale"))
+    finally:
+        prepared.close()
+    replacement = medmlx.prepare(weights_path=str(folder))
+    try:
+        result = replacement.run(image_paths=[str(source)], output_dir=str(tmp_path / "fresh"))
+        assert Path(result["outputs"]["mask"]).is_file()
+    finally:
+        replacement.close()
+
+
+@pytest.mark.metal
+@pytest.mark.parametrize("reader", ["SimpleITKIO", "NibabelIO", "NibabelIOWithReorient"])
+def test_in_memory_probabilities_match_file_reader_grid_crop_and_geometry(
+    case: tuple[Path, Path], tmp_path: Path, reader: str,
+) -> None:
+    """Preserve the existing probability export contract without a temporary input file."""
+    from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
+    from nnunet_mlx.storage.imageio import require_matching_geometry
+
+    folder, source = case
+    plans_path = folder / "plans.json"
+    plans = json.loads(plans_path.read_text())
+    plans["image_reader_writer"] = reader
+    plans_path.write_text(json.dumps(plans))
+    data = np.zeros((10, 9, 7), dtype=np.float32)
+    data[1:-1, 2:-1, 1:-1] = np.random.default_rng(167).normal(size=(8, 6, 5))
+    affine = np.array([[0.9, -0.8, 0, 12], [1.2, 0.6, 0, 8], [0, 0, 2, -3], [0, 0, 0, 1]])
+    image = nib.Nifti1Image(data, affine)
+    nib.save(image, source)
+    # Use the file's own NIfTI-1 header representation for the exact same
+    # input grid; labels still restore to that image's full source geometry.
+    image = nib.load(source)
+    original = np.asarray(image.dataobj).copy()
+    bundle = load_model_bundle(folder, configuration="3d_fullres", folds=(0, 1))
+    predictor = ModelFolderPredictor(bundle, compile_models=False, accumulation="nnunet-fp16")
+    baseline = predictor.predict_case([source], tmp_path / "baseline", save_probabilities=True,
+                                      overwrite=False)
+    actual = predictor.predict_nifti_probabilities(image)
+    expected = nib.load(baseline.files.segmentation)
+    np.testing.assert_array_equal(actual.segmentation.dataobj, expected.dataobj)
+    assert actual.segmentation.affine is not None
+    np.testing.assert_allclose(actual.segmentation.affine, expected.affine, rtol=0, atol=1e-5)
+    assert baseline.files.probabilities is not None and baseline.files.properties is not None
+    with np.load(baseline.files.probabilities) as arrays:
+        np.testing.assert_array_equal(actual.probabilities, arrays["probabilities"])
+    with baseline.files.properties.open("rb") as handle:
+        properties = cast(dict[str, object], pickle.load(handle))
+    require_matching_geometry(reader, actual.properties, properties)
+    for field in ("shape_before_cropping", "bbox_used_for_cropping",
+                  "shape_after_cropping_and_before_resampling", "labels", "regions_class_order"):
+        assert actual.properties[field] == properties[field]
+    assert actual.properties["inputs"] == []
+    np.testing.assert_array_equal(np.asarray(image.dataobj), original)
+    # Caller-owned result metadata must not mutate the reused model bundle.
+    labels = cast(dict[str, object], actual.properties["labels"])
+    labels["background"] = 999
+    assert bundle.dataset_json["labels"] == properties["labels"]
+
+
+@pytest.mark.metal
+def test_in_memory_probability_geometry_rejects_ambiguous_forms(
+    case: tuple[Path, Path], tmp_path: Path,
+) -> None:
+    """Refuse to invent a reader geometry when coded forms disagree."""
+    from nnunet_mlx.errors import ContractError
+    from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
+
+    folder, source = case
+    predictor = ModelFolderPredictor(load_model_bundle(folder, configuration="3d_fullres"),
+                                     compile_models=False)
+    image = nib.load(source)
+    other = np.array(image.affine, copy=True)
+    other[0, 3] += 20
+    image.set_qform(other, code=1, update_affine=False)
+    with pytest.raises(ContractError, match="consistent"):
+        predictor.predict_nifti_probabilities(image)
+
+
+@pytest.mark.metal
+@pytest.mark.parametrize("accumulation", ["float32", "nnunet-fp16"])
+def test_file_and_nifti_labels_stream_without_a_full_logit_volume(
+    case: tuple[Path, Path], tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, accumulation: str,
+) -> None:
+    """Keep cropped/transposed/padded labels equal to explicit host-logit export."""
+    folder, source = case
+    data = np.zeros((10, 9, 7), dtype=np.float32)
+    data[1:-1, 1:-1, 1:-1] = np.random.default_rng(97).normal(size=(8, 7, 5))
+    image = nib.Nifti1Image(data, INPUT_AFFINE)
+    nib.save(image, source)
+    bundle = load_model_bundle(folder, configuration="3d_fullres", folds=(0,))
+    predictor = ModelFolderPredictor(bundle, compile_models=False, accumulation=accumulation)
+    baseline = predictor.predict_case(
+        (source,), tmp_path / "baseline", save_probabilities=False, overwrite=False,
+        logits_file=tmp_path / "logits.npy",
+    )
+    expected = np.asarray(nib.load(baseline.files.segmentation).dataobj)
+
+    def forbid_full_logits(*args: object, **kwargs: object) -> object:
+        raise AssertionError("eligible labels must not allocate full host/device logits")
+
+    monkeypatch.setattr(
+        ArrayPredictor, "predict_logits_from_preprocessed_data", forbid_full_logits,
+    )
+    monkeypatch.setattr(
+        ArrayPredictor, "predict_device_logits_from_preprocessed_data", forbid_full_logits,
+    )
+    result = predictor.predict_case(
+        (source,), tmp_path / "streamed", save_probabilities=False, overwrite=False,
+    )
+    written = nib.load(result.files.segmentation)
+    in_memory = predictor.predict_nifti(image)
+    np.testing.assert_array_equal(np.asarray(written.dataobj), expected)
+    np.testing.assert_array_equal(np.asarray(in_memory.dataobj), expected)
+    np.testing.assert_array_equal(np.asarray(image.dataobj), data)
+    np.testing.assert_allclose(written.affine, INPUT_AFFINE, rtol=0, atol=1e-6)
 
 
 @pytest.fixture
