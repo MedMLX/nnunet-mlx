@@ -173,8 +173,13 @@ def _predict_model_logits(
     # A 2-D network on (C, S, H, W) data runs on each slice along axis 1 independently.
     """Run sliding-window logits for one model using the requested accumulation mode."""
     if len(patch_size) == 2 and data.ndim == 4:
-        per_slice = [
-            predict_logits(
+        if data.shape[1] == 0:
+            raise ContractError("2-D volume inference requires at least one slice")
+        # Each slice is already restored to its input size. Write it into the
+        # final channel-first volume instead of retaining slices alongside stack.
+        output = np.empty((num_outputs, *data.shape[1:]), dtype=np.float32)
+        for slice_index in range(int(data.shape[1])):
+            output[:, slice_index] = predict_logits(
                 model,
                 data[:, slice_index],
                 patch_size=patch_size,
@@ -183,9 +188,7 @@ def _predict_model_logits(
                 step_fraction=step_fraction,
                 accumulation=accumulation,
             )
-            for slice_index in range(int(data.shape[1]))
-        ]
-        return np.ascontiguousarray(np.stack(per_slice, axis=1), dtype=np.float32)
+        return output
     return predict_logits(
         model,
         data,
@@ -201,7 +204,9 @@ def logits_to_probabilities(logits: HostArray, *, has_regions: bool) -> FloatArr
     """Convert finite ``(C, H, W)`` or ``(C, D, H, W)`` logits to probabilities.
 
     Region channels use independent sigmoids; class channels use a softmax
-    across axis 0. Return contiguous float32 data with the input shape.
+    across axis 0. Return contiguous float32 data with the input shape without
+    modifying the input. Class normalization uses one owned output buffer while
+    retaining the input's memory order for the float32 class reduction.
     Malformed rank or non-finite values raise ``ContractError``.
     """
     values = np.asarray(logits, dtype=np.float32)
@@ -210,9 +215,14 @@ def logits_to_probabilities(logits: HostArray, *, has_regions: bool) -> FloatArr
     if has_regions:
         probabilities = _stable_sigmoid(values)
     else:
-        shifted = values - np.max(values, axis=0, keepdims=True)
-        exponent = np.exp(shifted)
-        probabilities = exponent / np.sum(exponent, axis=0, keepdims=True)
+        # K order preserves NumPy's fast-axis/pairwise reduction choice for
+        # Fortran or transposed inputs. Normalize only this owned buffer.
+        probabilities = np.empty_like(values, order="K")
+        np.subtract(values, np.max(values, axis=0, keepdims=True), out=probabilities)
+        np.exp(probabilities, out=probabilities)
+        np.divide(
+            probabilities, np.sum(probabilities, axis=0, keepdims=True), out=probabilities,
+        )
     return np.ascontiguousarray(probabilities, dtype=np.float32)
 
 

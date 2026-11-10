@@ -17,10 +17,49 @@ from nnunet_mlx.runtime import compile_inference_model, import_mlx
 
 
 class PointwiseModel:
+    def __init__(self, scale: float = 1.0) -> None:
+        self.scale = scale
+
     def __call__(self, values: array) -> array:
         """Return deterministic pointwise logits for tile tests."""
         mx, _ = import_mlx()
-        return mx.concatenate((values, -values), axis=-1)
+        return mx.concatenate((values * self.scale, -values * self.scale), axis=-1)
+
+
+@pytest.mark.metal
+@pytest.mark.parametrize(
+    ("accumulation", "shape", "axes", "folds"),
+    [("float32", (3, 3, 7), (), 1), ("nnunet-fp16", (4, 7, 9), (0, 1), 2)],
+)
+def test_2d_volume_logits_match_ordered_slice_stack(
+    accumulation: str, shape: tuple[int, int, int], axes: tuple[int, ...], folds: int,
+) -> None:
+    """Keep slice placement and fold/half rounding equal to separate slice outputs."""
+    from nnunet_mlx.prediction.inference import average_fold_logits
+
+    data = np.random.default_rng(741).normal(size=(1, *shape)).astype(np.float32)
+    models = tuple(PointwiseModel(scale) for scale in (1.0, 0.7)[:folds])
+    expected = None
+    for model in models:
+        current = np.stack([
+            predict_logits(
+                model, data[:, index], patch_size=(4, 5), num_classes=2,
+                mirroring_axes=axes, accumulation=accumulation,
+            ) for index in range(shape[0])
+        ], axis=1)
+        if accumulation == "nnunet-fp16":
+            current = current.astype(np.float16)
+        if expected is None:
+            expected = current
+        else:
+            expected += current
+    assert expected is not None
+    expected /= np.float32(folds)
+    actual = average_fold_logits(
+        models, data, patch_size=(4, 5), num_outputs=2,
+        mirroring_axes=axes, accumulation=accumulation,
+    )
+    np.testing.assert_array_equal(actual, expected)
 
 
 @pytest.mark.oracle
