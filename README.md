@@ -13,7 +13,7 @@ Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
 
 [Liver model weights](https://huggingface.co/MedMLX/nnunet-liver-mlx) · [Upstream](https://github.com/MIC-DKFZ/nnUNet) · [MedMLX](https://github.com/MedMLX/medmlx)
 
-<img src="https://raw.githubusercontent.com/MedMLX/nnunet-mlx/v0.7.2/docs/example.png" alt="nnU-Net segmentations of a liver CT and a brain tumor MRI" width="100%">
+<img src="https://raw.githubusercontent.com/MedMLX/nnunet-mlx/main/docs/example.png" alt="nnU-Net segmentations of a liver CT and a brain tumor MRI" width="100%">
 
 </div>
 
