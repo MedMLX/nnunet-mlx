@@ -178,11 +178,6 @@ def inference_compilation_eligible(model: object) -> bool:
     )
 
 
-def default_inference_compilation(model: object) -> bool:
-    """Compile by default only within the qualified inference envelope."""
-    return inference_compilation_eligible(model)
-
-
 def validate_inference_execution(model: object) -> None:
     """Reject residual configurations outside the qualified inference envelopes."""
 

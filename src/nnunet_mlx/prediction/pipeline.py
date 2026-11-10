@@ -41,10 +41,7 @@ from nnunet_mlx.prediction.io import (
     restore_and_export_prediction,
 )
 from nnunet_mlx.prediction.sliding_window import compute_steps
-from nnunet_mlx.runtime import (
-    compile_inference_model,
-    default_inference_compilation,
-)
+from nnunet_mlx.runtime import compile_inference_model
 
 if TYPE_CHECKING:
     from nibabel.nifti1 import Nifti1Image
@@ -160,10 +157,10 @@ class ModelFolderPredictor:
     Args:
         bundle: Loaded model folder (see ``load_model_bundle``).
         step_fraction: Sliding-window stride as a fraction of the patch size, in (0, 1].
-        compile_models: ``None`` compiles only models inside the supported compilation
-            envelope (native arithmetic only); ``True``/``False`` force the choice.
-            Ordered ``torch-order-fp32`` arithmetic disables automatic compilation
-            and rejects ``True``.
+        compile_models: Compile models inside the supported compilation envelope
+            (native arithmetic only). Off by default: the fused native kernels make
+            compiled forwards no faster. Ordered ``torch-order-fp32`` arithmetic
+            rejects ``True``.
         accumulation: ``"float32"`` or ``"nnunet-fp16"`` window accumulation; see
             ``predict_logits``.
 
@@ -177,23 +174,17 @@ class ModelFolderPredictor:
         bundle: ModelBundle,
         *,
         step_fraction: float = 0.5,
-        compile_models: bool | None = None,
+        compile_models: bool = False,
         accumulation: str = "float32",
     ) -> None:
         """Configure the model bundle, sliding-window settings and compilation policy."""
         self.bundle = bundle
-        compilation_enabled = (
-            bundle.arithmetic == "native"
-            and all(default_inference_compilation(model) for model in bundle.models)
-            if compile_models is None
-            else compile_models
-        )
-        if bundle.arithmetic != "native" and compilation_enabled:
+        if bundle.arithmetic != "native" and compile_models:
             raise ContractError("ordered inference arithmetic requires compile_models=False")
-        self.compilation_enabled = compilation_enabled
+        self.compilation_enabled = compile_models
         models = (
             tuple(compile_inference_model(model) for model in bundle.models)
-            if compilation_enabled
+            if compile_models
             else bundle.models
         )
         self.predictor = ArrayPredictor(

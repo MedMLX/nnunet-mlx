@@ -119,14 +119,13 @@ def predictor(bundle: ModelBundle, *, step_fraction: float) -> ModelFolderPredic
     """Return the predictor MedMLX runs and the prediction CLI use for ``bundle``.
 
     Windows and folds accumulate in float16 as in nnU-Net v2.8.1 (``nnunet-fp16``),
-    and models run uncompiled. ``ModelFolderPredictor``'s own defaults (float32
-    accumulation, automatic compilation) are for direct Python use.
+    and models run uncompiled. ``ModelFolderPredictor``'s own float32
+    accumulation default is for direct Python use.
     """
     from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
 
     return ModelFolderPredictor(
         bundle,
-        compile_models=False,
         accumulation=ACCUMULATION,
         step_fraction=step_fraction,
     )
