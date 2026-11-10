@@ -90,30 +90,22 @@ def _variance_partial_kernel() -> MetalKernel:
     )
 
 
-def spatial_statistics(values: array, eps: float) -> tuple[array, array]:
-    """Return per-batch, per-channel mean and inverse standard deviation.
+def spatial_variance(values: array, average: array) -> array:
+    """Return the population variance of float32 NHWC or NDHWC ``values``.
 
-    Accept nonempty float32 NHWC or NDHWC values with at least two spatial
-    elements and a finite positive ``eps``. Both outputs have broadcast shape
-    ``(N, 1, ..., 1, C)``; the variance is population variance. Squared values
-    are reduced in partitions without materializing a full squared array.
+    ``average`` is ``spatial_mean(values)`` with shape ``(N, 1, ..., 1, C)``, and
+    the result has the same shape. Each deviation and its square are rounded to
+    float32 before the ordered double-single reduction, the same bits as
+    reducing a materialized ``(values - average) ** 2``, but in partitions and
+    without that full squared array or a synchronization. Callers validate
+    ``values``.
     """
     import mlx.core as mx
 
-    from nnunet_mlx.errors import ContractError
-    from nnunet_mlx.kernels.metal_instance_norm import (
-        inverse_standard_deviation,
-        spatial_mean,
-        statistics_kernels,
-    )
+    from nnunet_mlx.kernels.metal_instance_norm import statistics_kernels
 
-    if values.ndim not in (4, 5) or values.dtype != mx.float32 or any(s < 1 for s in values.shape):
-        raise ContractError("ordered normalization requires nonempty float32 NHWC or NDHWC input")
     batch, channels = values.shape[0], values.shape[-1]
     spatial = values.size // (batch * channels)
-    if spatial < 2:
-        raise ContractError("ordered normalization requires spatial size >= 2")
-    average = spatial_mean(values)
     partitions = (spatial + 127) // 128
     template = [
         ("B", batch), ("S", spatial), ("C", channels), ("P", partitions), ("ROUND_SUM", True),
@@ -127,7 +119,7 @@ def spatial_statistics(values: array, eps: float) -> tuple[array, array]:
         output_dtypes=[mx.float32],
     )[0]
     _, reduce_kernel, _, _ = statistics_kernels()
-    variance = reduce_kernel(
+    return reduce_kernel(
         inputs=[partial],
         template=template,
         grid=(batch * channels * 256, 1, 1),
@@ -135,7 +127,19 @@ def spatial_statistics(values: array, eps: float) -> tuple[array, array]:
         output_shapes=[average.shape],
         output_dtypes=[mx.float32],
     )[0]
-    return average, inverse_standard_deviation(variance, eps)
+
+
+def spatial_statistics(values: array, eps: float) -> tuple[array, array]:
+    """Return per-batch, per-channel mean and inverse standard deviation.
+
+    The ordered statistics of ``metal_instance_norm.spatial_statistics``, which
+    validates ``values`` and ``eps``; both outputs have broadcast shape
+    ``(N, 1, ..., 1, C)``.
+    """
+    from nnunet_mlx.kernels.metal_instance_norm import spatial_statistics as ordered
+
+    average, _, inverse = ordered(values, eps)
+    return average, inverse
 
 
 @lru_cache(maxsize=1)

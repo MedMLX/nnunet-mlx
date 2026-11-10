@@ -112,12 +112,12 @@ def statistics_kernels() -> tuple[MetalKernel, MetalKernel, MetalKernel, MetalKe
     return kernels[0], kernels[1], kernels[2], kernels[3]
 
 
-def spatial_mean(values: array, *, round_sum: bool = False) -> array:
+def spatial_mean(values: array) -> array:
     """Reduce spatial axes with the retained 128-element double-single partitions.
 
     Callers must supply nonempty float32 channels-last values; this helper does
-    not independently validate shape or dtype. ``round_sum`` rounds the summed
-    value before division, matching the variance path's source operation order.
+    not independently validate shape or dtype. The variance path reduces with
+    the same kernels and ``ROUND_SUM``, which rounds the sum before division.
     """
     mx, _ = import_mlx()
     partial_kernel, reduce_kernel, _, _ = statistics_kernels()
@@ -129,7 +129,7 @@ def spatial_mean(values: array, *, round_sum: bool = False) -> array:
         ("S", spatial),
         ("C", channels),
         ("P", partitions),
-        ("ROUND_SUM", round_sum),
+        ("ROUND_SUM", False),
     ]
     partial = partial_kernel(
         inputs=[values],
@@ -150,18 +150,20 @@ def spatial_mean(values: array, *, round_sum: bool = False) -> array:
 
 
 def spatial_statistics(values: array, eps: float) -> tuple[array, array, array]:
-    """Return float32 mean, biased variance, and corrected inverse standard deviation."""
-    mx, _ = import_mlx()
+    """Return float32 mean, biased variance, and corrected inverse standard deviation.
+
+    The variance reduces float32-rounded squared deviations in the same order
+    as ``spatial_mean`` of the materialized squares, without forming them.
+    """
+    from nnunet_mlx.kernels.metal_fused_ordered_norm import spatial_variance
+
     _validate_values(values)
     batch, channels = values.shape[0], values.shape[-1]
     spatial = values.size // (batch * channels)
     if spatial < 2:
         raise ContractError("ordered normalization requires spatial size >= 2")
     average = spatial_mean(values)
-    centered = values - average
-    square = centered * centered
-    mx.eval(square)
-    variance = spatial_mean(square, round_sum=True)
+    variance = spatial_variance(values, average)
     return average, variance, inverse_standard_deviation(variance, eps)
 
 
