@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from importlib import import_module
 from typing import cast
 
@@ -17,6 +20,12 @@ type FloatArray = npt.NDArray[np.float32]
 type HostArray = npt.NDArray[np.generic]
 
 ANISOTROPY_THRESHOLD = 3.0
+# SciPy's spline zoom releases the GIL, so independent channels and slices resize
+# in parallel threads with unchanged results. Whole-volume channels run
+# concurrently only while their float64 working sets fit this budget; larger
+# volumes stay sequential so peak memory matches one channel at a time.
+_PARALLEL_RESIZE_BYTES = 4 << 30
+_RESIZE_THREADS = min(8, os.cpu_count() or 1)
 
 
 def compute_new_shape(
@@ -102,12 +111,18 @@ def resample_probabilities_or_data(
             dtype=output_dtype,
         )
     else:
-        result = np.stack(
-            [
-                _resize_channel(channel, target_shape, order=contract.order, dtype=output_dtype)
-                for channel in values
-            ]
-        )
+        result = np.empty((len(values), *target_shape), dtype=output_dtype)
+        # Float64 input copy, spline coefficients and output per channel.
+        working_set = 16 * values[0].size + 8 * int(np.prod(target_shape))
+        workers = max(1, min(len(values), _RESIZE_THREADS, _PARALLEL_RESIZE_BYTES // working_set))
+
+        def resize(index: int) -> None:
+            """Resize one channel into its slot of the preallocated result."""
+            result[index] = _resize_channel(
+                values[index], target_shape, order=contract.order, dtype=output_dtype
+            )
+
+        _run_indexed(resize, len(values), workers)
     if not np.isfinite(result).all():
         raise ContractError("resampling produced non-finite values")
     return np.ascontiguousarray(result, dtype=np.float32)
@@ -291,12 +306,11 @@ def _resample_separate_z(
     for channel_index, channel in enumerate(data):
         # Rounding planes before an interpolating out-of-plane pass would round twice.
         intermediate = np.empty(tuple(intermediate_shape), dtype=np.float64)
-        for slice_index in range(source_shape[axis]):
-            source_slice = np.take(channel, slice_index, axis=axis)
-            resized = _resize_channel(source_slice, in_plane_shape, order=order, dtype=np.float64)
-            selector: list[slice | int] = [slice(None)] * 3
-            selector[axis] = slice_index
-            intermediate[tuple(selector)] = resized
+        _run_indexed(
+            partial(_resize_plane_into, channel, intermediate, axis, in_plane_shape, order),
+            source_shape[axis],
+            _RESIZE_THREADS,
+        )
         result[channel_index] = resize_out_of_plane(
             intermediate,
             new_shape,
@@ -440,6 +454,37 @@ def coordinate_map(
         [scale * (grid + 0.5) - 0.5 for scale, grid in zip(scales, grids, strict=True)],
         dtype=np.float64,
     )
+
+
+def _resize_plane_into(
+    channel: npt.NDArray[np.generic],
+    intermediate: npt.NDArray[np.float64],
+    axis: int,
+    shape: Sequence[int],
+    order: int,
+    index: int,
+) -> None:
+    """Resize plane ``index`` of ``channel`` along ``axis`` into ``intermediate``."""
+    plane = np.take(channel, index, axis=axis)
+    resized = _resize_channel(plane, shape, order=order, dtype=np.float64)
+    selector: list[slice | int] = [slice(None)] * 3
+    selector[axis] = index
+    intermediate[tuple(selector)] = resized
+
+
+def _run_indexed(task: Callable[[int], None], count: int, workers: int) -> None:
+    """Run ``task(index)`` for every index, on up to ``workers`` threads.
+
+    Each task writes a disjoint output slot, so the result does not depend on
+    scheduling; the first raised exception propagates.
+    """
+    if workers <= 1 or count <= 1:
+        for index in range(count):
+            task(index)
+        return
+    with ThreadPoolExecutor(max_workers=min(workers, count)) as executor:
+        for _ in executor.map(task, range(count)):
+            pass
 
 
 def _resize_channel(

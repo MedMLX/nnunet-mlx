@@ -176,6 +176,20 @@ most 5.3e-5 relative to 0.6.4; fusing bias and LeakyReLU changes no bits.
 The full-case label maps of 0.6.4 and this change are identical in all
 59,572,224 voxels.
 
+## Host resampling
+
+Spline resampling of image data and of logits restored on the host uses SciPy, which
+releases the GIL, so independent channels and the in-plane slices of separate-axis
+resampling run on up to eight threads with bitwise unchanged results. Whole-volume
+channels run concurrently only while their float64 working sets fit 4 GiB, so large
+volumes keep one-channel-at-a-time memory. On an Apple M5 Max, paired runs on arrays
+from a 512×512×227 CT give: separate-axis resampling of 57 slices at 5 mm to 1 mm,
+688 to 180 ms; three float16 logit channels from 160×384×384 to 200×480×480,
+2.64 to 1.05 s, with host memory rising from 0.55 to 1.43 GB. Single-channel
+whole-volume resampling, the bulk of preprocessing for one CT, is unchanged. With
+`nnunet-fp16` accumulation, host logits stay float16 from the sliding window
+through fold averaging instead of passing through a float32 volume.
+
 ## Converting trained models
 
 `nnunet-mlx convert` and `nnunet-mlx predict` read upstream `checkpoint_final.pth`
