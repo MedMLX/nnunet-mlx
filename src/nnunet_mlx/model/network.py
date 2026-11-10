@@ -10,7 +10,6 @@ highest-resolution decoder head only (upstream's ``deep_supervision=False``).
 from __future__ import annotations
 
 from collections.abc import Callable
-from copy import copy
 from typing import TYPE_CHECKING, cast
 
 from nnunet_mlx.errors import ContractError
@@ -22,9 +21,8 @@ _, _nn = import_mlx()
 
 if TYPE_CHECKING:
     from mlx.core import array
-    from mlx.nn import AvgPool2d, AvgPool3d, Conv3d, ModuleTree
+    from mlx.nn import AvgPool2d, AvgPool3d, Conv3d
     from mlx.nn import Module as MlxModule
-    from mlx.utils import Tree
 else:
     MlxModule = _nn.Module
 
@@ -220,7 +218,7 @@ class ConvNorm(MlxModule):
         Native 3-D layers pass the convolution bias and LeakyReLU to the
         normalization kernels, which gives the same bits as separate operations.
         Layers whose convolution or normalization was replaced (ordered
-        arithmetic, compiled normalization) run each operation separately.
+        arithmetic) run each operation separately.
         """
         conv, norm = self.conv, self.norm
         # Ordered arithmetic swaps in a SpatialInstanceNorm subclass, hence the exact type.
@@ -694,64 +692,37 @@ class ResidualEncoderUNet(MlxModule):
         return cast("MlxModule", getattr(self, f"up{self._decoders - 1}"))
 
 
-class _CompiledInstanceNorm(MlxModule):
-    """Compile one native normalization, preserving its corrected FP32 reductions."""
-
-    def __init__(self, layer: SpatialInstanceNorm) -> None:
-        """Compile one native instance-normalization layer with its state."""
-        super().__init__()
-        self.layer = layer
-        self._call = _mx().compile(cast(ArrayTransform, layer), inputs=layer.state)
-
-    def __call__(self, values: array) -> array:
-        """Run the compiled instance-normalization layer."""
-        return self._call(values)
-
-
 class _CompiledResidualInference:
-    """Callable wrapper that runs a residual model with compiled norms and final upsample."""
+    """Callable wrapper that runs a residual model with a compiled final upsample."""
 
-    compilation_scope = "normalization_and_final_upsample"
+    compilation_scope = "final_upsample"
 
     def __init__(self, model: ResidualEncoderUNet) -> None:
-        # Copy module ownership, sharing parameter arrays. This leaves
-        # the caller's reference model untouched and avoids copying kernel callables.
-        """Copy the model tree and compile normalization and the final upsample."""
-        self.model = cast(ResidualEncoderUNet, _compile_normalization_tree(model))
+        """Compile the model's final upsample; every other layer runs as uncompiled."""
+        self.model = model
         self.spec = model.spec
-        final_upsample = self.model.final_upsample()
+        final_upsample = model.final_upsample()
         self._final_upsample = _mx().compile(
             cast(ArrayTransform, final_upsample),
             inputs=final_upsample.state,
         )
 
     def __call__(self, values: array) -> NetworkOutput:
-        """Run the copied model with the compiled final upsample."""
+        """Run the model with the compiled final upsample."""
         return self.model.forward_with_final_upsample(
             values,
             final_upsample=self._final_upsample,
         )
 
 
-def _compile_normalization_tree(layer: MlxModule) -> MlxModule:
-    """Copy a module tree and replace instance norms with compiled wrappers."""
-    from mlx.utils import tree_map
-
-    copied = copy(layer)
-    if isinstance(copied, SpatialInstanceNorm):
-        return _CompiledInstanceNorm(copied)
-    children = cast("Tree[MlxModule]", layer.children())
-    compiled = tree_map(_compile_normalization_tree, children, is_leaf=MlxModule.is_module)
-    copied.update_modules(cast("dict[str, ModuleTree]", compiled))
-    return copied
-
-
 def compile_residual_inference_model(model: ResidualEncoderUNet) -> _CompiledResidualInference:
-    """Compile native normalization and the final upsample of a fixed-state residual model.
+    """Compile the final upsample of a fixed-state residual model.
 
-    Stage materialization and convolution dispatch remain unchanged. The caller's
-    model stays unmodified. Whole-network compilation is unsupported; the README's
-    supported configurations list the compilation and architecture limits.
+    Normalization stays on the fused native kernels: compiling it separately,
+    as earlier releases did, bypassed the fused convolution bias and LeakyReLU
+    and the split decoder convolution, making 3-D residual forwards slower. Stage
+    materialization and convolution dispatch remain unchanged, and the
+    caller's model is not modified. Whole-network compilation is unsupported.
     """
 
     return _CompiledResidualInference(model)

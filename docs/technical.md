@@ -6,10 +6,12 @@ The MedMLX runners and the CLI's `predict` and `predict-folder` compute the same
 uncompiled models, with sliding windows and folds accumulated in float16 as nnU-Net v2.8.1
 does. The logits stay float16 into restoration, where spline resampling interpolates in
 float64 and rounds back to float16 before the softmax or argmax, again as nnU-Net does; at
-near ties the first class wins. `ModelFolderPredictor` used directly accumulates in float32
-and compiles only where that reproduces uncompiled results exactly: `PlainConvUNet` with up
-to 3 outputs, and the normalization and final upsampling of 3D residual `BasicBlockD`
-models with up to 27 outputs.
+near ties the first class wins. `ModelFolderPredictor` used directly accumulates in float32.
+Its `compile_models=True` compiles only where that reproduces uncompiled results exactly:
+`PlainConvUNet` with up to 3 outputs, and the final upsampling of 3D residual `BasicBlockD`
+models with up to 27 outputs. Compilation is off by default because it is no faster than
+the fused native kernels (128³ forward, M5 Max: 96.8 vs 98.2 ms uncompiled vs compiled for
+the liver `PlainConvUNet`).
 
 `--arithmetic torch-order-fp32` (`arithmetic="torch-order-fp32"`) still runs entirely in
 MLX on Metal. It selects local kernels that sum float32 values in the pinned PyTorch CPU
@@ -154,6 +156,13 @@ each, 0.6.4 first:
 Single sequential runs include the sustained-clock variation described above,
 so the paired per-tile numbers are the better estimate of the speedup.
 
+Each mirrored view is now queued for evaluation as soon as its graph is built, so
+the eight forwards of a tile run one after another instead of interleaved. On a
+27-tile, 192×256×256 crop of `amos_0008` with the released weights, the logits are
+bitwise unchanged, the time is unchanged (15.4 vs 15.6 s), and the peak footprint
+falls from 11.6 to 4.9 GB (MLX peak 6.5 to 3.3 GB). For one mirrored 128³ tile, paired
+runs give 924 vs 914 ms (×0.98-1.05) and a footprint of 10.7 vs 4.0 GB.
+
 For comparison, the pinned upstream PyTorch network (nnU-Net 2.8.1,
 dynamic-network-architectures 0.4.4, torch 2.13.0) with the same weights takes
 291 ms per 128³ forward pass on MPS and 4,148 ms on the CPU.
@@ -168,6 +177,20 @@ argmax of any voxel. Splitting the decoder convolution changes logits by at
 most 5.3e-5 relative to 0.6.4; fusing bias and LeakyReLU changes no bits.
 The full-case label maps of 0.6.4 and this change are identical in all
 59,572,224 voxels.
+
+## Host resampling
+
+Spline resampling of image data and of logits restored on the host uses SciPy, which
+releases the GIL, so independent channels and the in-plane slices of separate-axis
+resampling run on up to eight threads with bitwise unchanged results. Whole-volume
+channels run concurrently only while their float64 working sets fit 4 GiB, so large
+volumes keep one-channel-at-a-time memory. On an Apple M5 Max, paired runs on arrays
+from a 512×512×227 CT give: separate-axis resampling of 57 slices at 5 mm to 1 mm,
+688 to 180 ms; three float16 logit channels from 160×384×384 to 200×480×480,
+2.64 to 1.05 s, with host memory rising from 0.55 to 1.43 GB. Single-channel
+whole-volume resampling, the bulk of preprocessing for one CT, is unchanged. With
+`nnunet-fp16` accumulation, host logits stay float16 from the sliding window
+through fold averaging instead of passing through a float32 volume.
 
 ## Converting trained models
 

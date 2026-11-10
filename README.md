@@ -64,7 +64,10 @@ copy.
 All runners take `output_dir`, `weights_path` and `overwrite`, and return the label map
 as `outputs["mask"]`.
 
-- **Liver** runs its one fold.
+- **Liver** runs its one fold. Liver and AutoPET take `use_mirroring` and
+  `step_fraction`: the released setting runs eight mirrored passes per tile at step
+  0.5, and `use_mirroring=False` or a larger step does less work but changes the
+  prediction.
 - **Pancreas** runs one `fold_all` model. Labels: background 0, pancreas 1, cancer 2.
 - **AutoPET** averages its five released folds, as upstream does.
 - **BraTS** averages five folds; `fold=` selects one. It keeps the original BAMF labels:

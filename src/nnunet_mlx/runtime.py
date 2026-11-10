@@ -41,6 +41,10 @@ class InferenceRuntime(Protocol):
         """Evaluate the supplied lazy MLX values."""
         ...
 
+    def async_eval(self, *args: object) -> None:
+        """Schedule evaluation of the supplied lazy MLX values without waiting."""
+        ...
+
     def contiguous(self, value: array) -> array:
         """Return a contiguous MLX array."""
         ...
@@ -172,11 +176,6 @@ def inference_compilation_eligible(model: object) -> bool:
         (isinstance(spec, PlainConvUNetSpec) and spec.num_classes <= 3)
         or _residual_inference_eligible(spec)
     )
-
-
-def default_inference_compilation(model: object) -> bool:
-    """Compile by default only within the qualified inference envelope."""
-    return inference_compilation_eligible(model)
 
 
 def validate_inference_execution(model: object) -> None:

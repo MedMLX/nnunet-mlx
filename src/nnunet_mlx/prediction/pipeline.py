@@ -41,10 +41,7 @@ from nnunet_mlx.prediction.io import (
     restore_and_export_prediction,
 )
 from nnunet_mlx.prediction.sliding_window import compute_steps
-from nnunet_mlx.runtime import (
-    compile_inference_model,
-    default_inference_compilation,
-)
+from nnunet_mlx.runtime import compile_inference_model
 
 if TYPE_CHECKING:
     from nibabel.nifti1 import Nifti1Image
@@ -59,7 +56,9 @@ class PredictionMetrics:
     ``tile_count`` is the number of sliding-window tiles run, summed over folds (and
     over slices for 2-D models), not counting mirrored forward passes. ``padded_shape``
     is the spatial shape after minimum-size padding and ``patch_size`` the patch shape,
-    both in the plans' axis order.
+    both in the plans' axis order. ``tile_inference_s`` covers network and fold
+    inference; ``restoration_export_s`` covers restoration, on Metal or the host,
+    and file export.
     """
 
     preprocessing_s: float
@@ -160,10 +159,10 @@ class ModelFolderPredictor:
     Args:
         bundle: Loaded model folder (see ``load_model_bundle``).
         step_fraction: Sliding-window stride as a fraction of the patch size, in (0, 1].
-        compile_models: ``None`` compiles only models inside the supported compilation
-            envelope (native arithmetic only); ``True``/``False`` force the choice.
-            Ordered ``torch-order-fp32`` arithmetic disables automatic compilation
-            and rejects ``True``.
+        compile_models: Compile models inside the supported compilation envelope
+            (native arithmetic only). Off by default: the fused native kernels make
+            compiled forwards no faster. Ordered ``torch-order-fp32`` arithmetic
+            rejects ``True``.
         accumulation: ``"float32"`` or ``"nnunet-fp16"`` window accumulation; see
             ``predict_logits``.
 
@@ -177,23 +176,17 @@ class ModelFolderPredictor:
         bundle: ModelBundle,
         *,
         step_fraction: float = 0.5,
-        compile_models: bool | None = None,
+        compile_models: bool = False,
         accumulation: str = "float32",
     ) -> None:
         """Configure the model bundle, sliding-window settings and compilation policy."""
         self.bundle = bundle
-        compilation_enabled = (
-            bundle.arithmetic == "native"
-            and all(default_inference_compilation(model) for model in bundle.models)
-            if compile_models is None
-            else compile_models
-        )
-        if bundle.arithmetic != "native" and compilation_enabled:
+        if bundle.arithmetic != "native" and compile_models:
             raise ContractError("ordered inference arithmetic requires compile_models=False")
-        self.compilation_enabled = compilation_enabled
+        self.compilation_enabled = compile_models
         models = (
             tuple(compile_inference_model(model) for model in bundle.models)
-            if compilation_enabled
+            if compile_models
             else bundle.models
         )
         self.predictor = ArrayPredictor(
@@ -310,10 +303,10 @@ class ModelFolderPredictor:
         prepared = self._prepare_input(image_files, previous_stage_file)
         preprocessing_s = perf_counter() - preprocessing_started
         inference_started = perf_counter()
-        logits, restored = self._infer(
+        logits, restored, device_restoration_s = self._infer(
             prepared, save_probabilities=save_probabilities, host_logits=logits_path is not None
         )
-        tile_inference_s = perf_counter() - inference_started
+        tile_inference_s = perf_counter() - inference_started - device_restoration_s
         export_started = perf_counter()
         files = self._export(
             logits,
@@ -324,7 +317,7 @@ class ModelFolderPredictor:
             overwrite=overwrite,
             completion_identity=identity,
         )
-        restoration_export_s = perf_counter() - export_started
+        restoration_export_s = perf_counter() - export_started + device_restoration_s
         if logits_path is not None:
             if logits is None:
                 raise AssertionError("requested logits export lacks host logits")
@@ -528,7 +521,7 @@ class ModelFolderPredictor:
         for plan, prepared in self._prepared_cases(
             plans, preprocess_executor, preprocessing_processes, allowance
         ):
-            logits, restored = self._infer(
+            logits, restored, _ = self._infer(
                 prepared, save_probabilities=save_probabilities, host_logits=False
             )
             shape = tuple(int(value) for value in prepared.data.shape)
@@ -543,7 +536,8 @@ class ModelFolderPredictor:
                     completion_identity=plan.identity,
                 )
                 predictions.append(_case_result(plan, shape, files, self.bundle.folds))
-                del prepared
+                # Release this case's outputs before the next case's inference.
+                del prepared, logits, restored
                 continue
             pending_exports.append(
                 (
@@ -562,7 +556,7 @@ class ModelFolderPredictor:
                     ),
                 )
             )
-            del prepared
+            del prepared, logits, restored
             if len(pending_exports) > export_processes:
                 predictions.append(_completed_export(pending_exports.popleft(), self.bundle.folds))
         while pending_exports:
@@ -648,13 +642,15 @@ class ModelFolderPredictor:
         *,
         save_probabilities: bool,
         host_logits: bool,
-    ) -> tuple[LogitArray | None, RestoredPrediction | None]:
+    ) -> tuple[LogitArray | None, RestoredPrediction | None, float]:
         """Return host logits, or labels restored without leaving Metal.
 
         Label-only 3-D class predictions keep fold logits on Metal through
         resampling and argmax, transferring only uint16 labels. One same-grid
         fold streams labels without a full logit volume. Cases the fused
-        restoration rejects receive the same logits on the host instead.
+        restoration rejects receive the same logits on the host instead. The
+        last value is the seconds spent in Metal restoration after fold
+        inference; streamed labels count as inference.
         """
         if (
             host_logits
@@ -662,22 +658,26 @@ class ModelFolderPredictor:
             or self.bundle.semantics.has_regions
             or len(self.predictor.patch_size) != 3
         ):
-            return self.predictor.predict_logits_from_preprocessed_data(prepared.data), None
+            return self.predictor.predict_logits_from_preprocessed_data(prepared.data), None, 0.0
         streamed = predict_same_grid_segmentation(
             self.predictor, prepared.data, prepared.properties,
             self.bundle.plans, self.bundle.semantics,
         )
         if streamed is not None:
-            return None, streamed
+            return None, streamed, 0.0
+        # Fold averaging evaluates the device logits, so this boundary separates
+        # network time from restoration without an extra synchronization.
         device_logits = self.predictor.predict_device_logits_from_preprocessed_data(prepared.data)
+        restoring = perf_counter()
         restored = restore_device_segmentation(
             device_logits, prepared.properties, self.bundle.plans, self.bundle.semantics
         )
+        restoration_s = perf_counter() - restoring
         if restored is not None:
-            return None, restored
+            return None, restored, restoration_s
         host = device_logits_to_host(device_logits)
         del device_logits
-        return host, None
+        return host, None, restoration_s
 
     def _export(
         self,
