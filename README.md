@@ -23,7 +23,7 @@ Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
 
 | Model | Weights download | Peak MLX memory | Measured on |
 | :--- | ---: | ---: | :--- |
-| `nnunet-liver` | 125 MB | 8.9 GB | 768×768×101 abdominal CT |
+| `nnunet-liver` | 125 MB | 5.5 GB | 768×768×101 abdominal CT |
 | `nnunet-pancreas` | 410 MB | 14.5 GB | 768×768×101 abdominal CT |
 | `nnunet-brats2021` | 628 MB | 7.4 GB | 240×240×155 four-sequence brain MRI |
 | `nnunet-autopet` | 2.0 GB | 4.8 GB | 400×400×284 whole-body PET/CT |

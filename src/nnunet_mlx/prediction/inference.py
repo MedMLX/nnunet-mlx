@@ -71,13 +71,14 @@ def average_fold_logits(
             step_fraction=step_fraction,
             accumulation=accumulation,
         )
-        # Upstream retains half tensors across fold addition and division; each
-        # fold already arrives in float16 for nnunet-fp16.
+        # Upstream retains half tensors across fold addition and division. Host
+        # sliding-window folds already arrive in float16, so this copies nothing.
+        values = np.asarray(current, dtype=np.float16) if upstream_fp16 else current
         if total is None:
             # Each fold's logits are freshly allocated, so the sum can own them.
-            total = current
+            total = values
         else:
-            total += current
+            total += values
     if total is None:
         raise AssertionError("fold ensemble unexpectedly produced no logits")
     total /= np.float32(len(models))

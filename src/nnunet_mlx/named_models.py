@@ -22,7 +22,7 @@ LIVER = {
     "run": "nnunet_mlx.named_models:liver",
     "cohort": "nnunet_mlx.named_models:prepare_liver",
     # Measured MLX peak for a 768x768x101 abdominal CT; larger inputs need more.
-    "peak_memory_gb": 9.0,
+    "peak_memory_gb": 5.6,
     "summary": "Liver and liver cancer segmentation of one CT volume.",
     "labels": {"1": "liver", "2": "cancer"},
 }
