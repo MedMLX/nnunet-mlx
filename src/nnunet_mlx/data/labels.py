@@ -75,7 +75,8 @@ def parse_dataset_label_semantics(
         name: _label_values(value, name=f"label {name!r}") for name, value in labels.items()
     }
     all_labels = sorted({label for values in label_values.values() for label in values})
-    if all_labels != list(range(all_labels[-1] + 1)):
+    # Bound validation memory by the metadata size, even for huge sparse label IDs.
+    if all_labels != list(range(len(all_labels))):
         raise ContractError("dataset labels must be consecutive integers starting at 0")
     if ignore_label is not None and ignore_label != max(all_labels) + 1:
         raise ContractError("ignore label must equal the largest label plus one")
