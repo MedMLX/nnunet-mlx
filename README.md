@@ -6,7 +6,7 @@ Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
 
 [![PyPI](https://img.shields.io/pypi/v/nnunet-mlx)](https://pypi.org/project/nnunet-mlx/)
 [![Python](https://img.shields.io/pypi/pyversions/nnunet-mlx)](https://pypi.org/project/nnunet-mlx/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/nnunet-mlx/blob/v0.7.2/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](https://github.com/MedMLX/nnunet-mlx/blob/v0.8.0/LICENSE)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-MLX-black?logo=apple)](https://github.com/ml-explore/mlx)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97_Hugging_Face-weights-yellow)](https://huggingface.co/MedMLX/nnunet-liver-mlx)
 [![MedMLX](https://img.shields.io/badge/MedMLX-runtime-A51C30)](https://github.com/MedMLX/medmlx)
@@ -33,7 +33,7 @@ Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
 ```bash
 uv venv --python 3.13
 source .venv/bin/activate
-uv pip install "nnunet-mlx>=0.7.2"
+uv pip install "nnunet-mlx>=0.8.0"
 ```
 
 ## Run
@@ -281,4 +281,4 @@ For Codex, use `codex mcp add medmlx -- "$MEDMLX" serve --root "$HOME/medmlx-wor
 
 ## License
 
-[Apache-2.0](https://github.com/MedMLX/nnunet-mlx/blob/v0.7.2/LICENSE). See [third-party notices](https://github.com/MedMLX/nnunet-mlx/blob/v0.7.2/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms.
+[Apache-2.0](https://github.com/MedMLX/nnunet-mlx/blob/v0.8.0/LICENSE). See [third-party notices](https://github.com/MedMLX/nnunet-mlx/blob/v0.8.0/THIRD_PARTY_NOTICES.md). Model weights retain their publisher terms.
