@@ -21,7 +21,12 @@ Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
 | :--- | :--- |
 | NIfTI channels | Segmentation and optional probabilities |
 
-Weights: 125 MB (`nnunet-liver`), 410 MB (`nnunet-pancreas`), 628 MB (`nnunet-brats2021`) and 2.0 GB (`nnunet-autopet`) downloads. Peak MLX memory: 8.9 GB for a 768×768×101 abdominal CT with `nnunet-liver`, 14.5 GB for the same CT with `nnunet-pancreas`, 7.4 GB for a 240×240×155 four-sequence brain MRI with `nnunet-brats2021` and 4.8 GB for a 400×400×284 whole-body PET/CT with `nnunet-autopet`.
+| Model | Weights download | Peak MLX memory | Measured on |
+| :--- | ---: | ---: | :--- |
+| `nnunet-liver` | 125 MB | 8.9 GB | 768×768×101 abdominal CT |
+| `nnunet-pancreas` | 410 MB | 14.5 GB | 768×768×101 abdominal CT |
+| `nnunet-brats2021` | 628 MB | 7.4 GB | 240×240×155 four-sequence brain MRI |
+| `nnunet-autopet` | 2.0 GB | 4.8 GB | 400×400×284 whole-body PET/CT |
 
 ## Use with MedMLX
 
@@ -83,15 +88,18 @@ as `outputs["mask"]`.
 - **MRSegmentator** averages five folds; `fast=True` uses fold 0 and `fold=` selects
   one. It runs without mirroring, with `torch-order-fp32` arithmetic.
 
-SIAM v0.3 is the contrast-agnostic head tissue model by Valabregue et al.
+**SIAM** v0.3 is the contrast-agnostic head tissue model by Valabregue et al.
 ([repository](https://github.com/romainVala/SIAM), [paper](https://arxiv.org/abs/2605.02737)),
-trained on synthetic images. Its 17 labels cover grey and white matter, CSF and
-ventricles, cerebellar grey matter, deep nuclei, hippocampus and amygdala, dura,
-vessels, skull and scalp, plus `Anomalies` (17) for pathology. Like `siam-pred`, the
-runner predicts on the volume reoriented to RAS without interpolation, averages the
-five folds without mirroring, and returns labels on the input grid; `voxel_size=`
-reproduces `-voxelsize` for small heads and `fold=` selects one fold. A typical head
-MRI needs about 16 GB of memory, more for larger fields of view.
+trained on synthetic images.
+
+- **Labels:** 17 labels cover grey and white matter, CSF and ventricles, cerebellar grey
+  matter, deep nuclei, hippocampus and amygdala, dura, vessels, skull and scalp, plus
+  `Anomalies` (17) for pathology.
+- **Prediction:** like `siam-pred`, the runner predicts on the volume reoriented to RAS
+  without interpolation, averages the five folds without mirroring, and returns labels
+  on the input grid. `voxel_size=` reproduces `-voxelsize` for small heads and `fold=`
+  selects one fold.
+- **Memory:** a typical head MRI needs about 16 GB, more for larger fields of view.
 
 ### Your own trained models
 
@@ -105,12 +113,14 @@ export nnUNet_results=/path/to/nnUNet_results
 nnunet-mlx predict -i imagesTs -o predictions -d 3 -c 3d_fullres
 ```
 
-The first run converts the PyTorch checkpoints to MLX and caches the result in
-`~/.cache/nnunet-mlx` (`NNUNET_MLX_CACHE`); later runs reuse it until a checkpoint
-changes. `-m` takes a trained model folder instead of `-d`/`-c`/`-tr`/`-p`. Also
-supported: `-f`, `-chk`, `-step_size`, `--disable_tta`, `--save_probabilities`,
-`--continue_prediction`, `-npp`, `-nps`, `-prev_stage_predictions`, `-num_parts` and
-`-part_id`. Device options don't apply: everything runs on Metal.
+- **Caching:** the first run converts the PyTorch checkpoints to MLX and caches the
+  result in `~/.cache/nnunet-mlx` (`NNUNET_MLX_CACHE`); later runs reuse it until a
+  checkpoint changes.
+- **Model selection:** `-m` takes a trained model folder instead of `-d`/`-c`/`-tr`/`-p`.
+- **Other options:** `-f`, `-chk`, `-step_size`, `--disable_tta`, `--save_probabilities`,
+  `--continue_prediction`, `-npp`, `-nps`, `-prev_stage_predictions`, `-num_parts` and
+  `-part_id`.
+- **Device options** don't apply: everything runs on Metal.
 
 To keep a converted folder, for sharing or for the Python API:
 
@@ -155,9 +165,13 @@ mlx-model/
 | `save_probabilities` | `False` | Also write probabilities and their nnU-Net properties sidecar |
 
 The result is `{"outputs": {...}, "details": {...}}`. `outputs["mask"]` is a label map
-on the input image's grid. Bad inputs raise `InvalidInputError`, a missing or
-mismatched model folder raises `AssetNotReadyError`, and failures while running raise
-`ModelExecutionError`.
+on the input image's grid.
+
+| Error | Raised when |
+| :--- | :--- |
+| `InvalidInputError` | An input is bad |
+| `AssetNotReadyError` | The model folder is missing or mismatched |
+| `ModelExecutionError` | Running fails |
 
 ### Command line
 
@@ -176,13 +190,14 @@ nnunet-mlx model predict \
 
 `hf` comes with the runtime. Pass one `--input` per modality in channel order. Without
 `--fold`, every numeric fold is ensembled; `--fold all` selects `fold_all`.
-`--previous-stage` supplies a cascade's previous-stage segmentation. The other
-`nnunet-mlx model` commands:
+`--previous-stage` supplies a cascade's previous-stage segmentation.
 
-- `predict-folder` predicts a folder of cases; `--continue-existing` skips finished ones.
-- `ensemble` averages saved probabilities from several prediction folders.
-- `apply-postprocessing` applies a released `postprocessing.pkl`, as
-  `nnUNetv2_apply_postprocessing` does.
+| `nnunet-mlx model` command | Purpose |
+| :--- | :--- |
+| `predict` | Predicts one case |
+| `predict-folder` | Predicts a folder of cases; `--continue-existing` skips finished ones |
+| `ensemble` | Averages saved probabilities from several prediction folders |
+| `apply-postprocessing` | Applies a released `postprocessing.pkl`, as `nnUNetv2_apply_postprocessing` does |
 
 Every command takes `--help`, and `--json` prints machine-readable results.
 
