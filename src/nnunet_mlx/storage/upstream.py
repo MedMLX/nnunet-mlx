@@ -345,7 +345,13 @@ def cached_conversion(
     cache_folder = Path(os.path.normpath(str(folder)))
     if not cache_folder.name or not cache_folder.parent.name:
         raise ContractError("trained folder needs dataset and model directory names")
-    target = root / "converted" / cache_folder.parent.name / cache_folder.name
+    dataset_cache = root / "converted" / cache_folder.parent.name
+    expected_parent = root.resolve() / "converted" / cache_folder.parent.name
+    if dataset_cache.resolve() != expected_parent:
+        raise ContractError(f"conversion cache has a symlinked parent: {dataset_cache}")
+    target = dataset_cache / cache_folder.name
+    if target.is_symlink():
+        raise ContractError(f"conversion cache entry must not be a symlink: {target}")
     if _conversion_is_current(target, folder, available, checkpoint_name):
         return target
     if target.exists():

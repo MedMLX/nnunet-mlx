@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from nnunet_mlx.errors import ContractError
 from nnunet_mlx.storage import upstream
 
 pytestmark = pytest.mark.host
@@ -46,3 +47,32 @@ def test_cached_conversion_normalizes_parent_components_in_cache_name(
 
     assert result == converted / "Dataset001" / "Trainer"
     assert neighbor.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize("ancestor", ["converted", "dataset"])
+def test_cached_conversion_rejects_symlinked_cache_ancestor(
+    tmp_path: Path, ancestor: str
+) -> None:
+    source = tmp_path / "source" / "Dataset001" / "Trainer"
+    fold = source / "fold_0"
+    fold.mkdir(parents=True)
+    (fold / upstream.UPSTREAM_CHECKPOINT).write_bytes(b"test checkpoint")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    outside = tmp_path / "outside"
+    if ancestor == "converted":
+        target = outside / "Dataset001" / "Trainer"
+        (cache / "converted").symlink_to(outside, target_is_directory=True)
+    else:
+        target = outside / "Trainer"
+        converted = cache / "converted"
+        converted.mkdir()
+        (converted / "Dataset001").symlink_to(outside, target_is_directory=True)
+    target.mkdir(parents=True)
+    sentinel = target / "keep.txt"
+    sentinel.write_text("outside cache", encoding="utf-8")
+
+    with pytest.raises(ContractError):
+        upstream.cached_conversion(source, folds=None, cache=cache)
+
+    assert sentinel.read_text(encoding="utf-8") == "outside cache"
