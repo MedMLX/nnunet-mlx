@@ -6,6 +6,7 @@ import json
 import pickle
 import platform
 import tempfile
+import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -607,10 +608,46 @@ def _validate_staged_prediction(
     expected = prediction.segmentation
     if not np.array_equal(restored, expected):
         raise ContractError("staged segmentation does not match prediction")
-    if files.probabilities is not None and prediction.probabilities is not None:
-        with np.load(files.probabilities) as payload:
-            if not np.array_equal(payload["probabilities"], prediction.probabilities):
-                raise ContractError("staged probabilities do not match prediction")
+    probabilities = prediction.probabilities
+    if (
+        files.probabilities is not None
+        and probabilities is not None
+        and not npz_array_equals(files.probabilities, "probabilities", probabilities)
+    ):
+        raise ContractError("staged probabilities do not match prediction")
+
+
+_COMPARE_BYTES = 16 << 20
+
+
+def npz_array_equals(path: Path, name: str, expected: npt.NDArray[np.generic]) -> bool:
+    """Return whether member ``name`` of ``path`` stores exactly ``expected``.
+
+    The member is decompressed and compared in 16 MiB blocks instead of being
+    loaded as a second full array. ``expected`` is flattened in the stored memory
+    order, a view whenever ``np.save`` wrote it without reordering. Header shape,
+    dtype and order must match, and the stream must end with the data.
+    """
+    with zipfile.ZipFile(path) as archive, archive.open(f"{name}.npy") as stream:
+        version = np.lib.format.read_magic(stream)
+        if version == (1, 0):
+            shape, fortran, dtype = np.lib.format.read_array_header_1_0(stream)
+        elif version == (2, 0):
+            shape, fortran, dtype = np.lib.format.read_array_header_2_0(stream)
+        else:
+            return False
+        if tuple(shape) != expected.shape or dtype != expected.dtype or dtype.hasobject:
+            return False
+        flat = np.ravel(expected, order="F" if fortran else "C")
+        step = max(1, _COMPARE_BYTES // dtype.itemsize)
+        for start in range(0, flat.size, step):
+            count = min(step, flat.size - start)
+            block = stream.read(count * dtype.itemsize)
+            if len(block) != count * dtype.itemsize:
+                return False
+            if not np.array_equal(np.frombuffer(block, dtype=dtype), flat[start : start + count]):
+                return False
+        return stream.read(1) == b""
 
 
 def _shape(value: object, *, name: str) -> tuple[int, int, int]:

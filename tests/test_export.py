@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -186,3 +187,24 @@ def test_fp16_prediction_restores_like_the_pinned_predictor(
         )
         np.testing.assert_array_equal(device.segmentation, expected_segmentation)
     np.testing.assert_array_equal(host.segmentation, expected_segmentation)
+
+
+@pytest.mark.host
+def test_staged_probability_check_streams_exact_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accept only the written array, in either memory order and across blocks."""
+    from nnunet_mlx.prediction import export
+
+    # Small blocks make the comparison cross block boundaries on a small array.
+    monkeypatch.setattr(export, "_COMPARE_BYTES", 64)
+    rng = np.random.default_rng(3)
+    values = rng.random((3, 5, 7, 4), dtype=np.float32)
+    for written in (values, np.asfortranarray(values), values.transpose(0, 3, 2, 1)):
+        path = tmp_path / "probabilities.npz"
+        np.savez_compressed(path, probabilities=written)
+        assert export.npz_array_equals(path, "probabilities", written)
+        changed = written.copy(order="K")
+        changed.flat[changed.size // 2] += np.float32(1e-6)
+        for candidate in (changed, written.astype(np.float64), written[:, :-1]):
+            assert not export.npz_array_equals(path, "probabilities", candidate)
