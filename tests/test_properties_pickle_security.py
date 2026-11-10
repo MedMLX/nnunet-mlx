@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copyreg
 import pickle
+import pickletools
 from pathlib import Path
 
 import numpy as np
@@ -117,3 +118,85 @@ def test_case_properties_accept_plain_numpy_metadata(tmp_path: Path, protocol: i
 
     assert loaded["spacing"] == expected["spacing"]
     np.testing.assert_array_equal(np.asarray(loaded["affine"]), np.eye(4))
+
+
+@pytest.mark.parametrize("protocol", [4, pickle.HIGHEST_PROTOCOL])
+def test_case_properties_reject_dtype_mutation_after_array_build(
+    tmp_path: Path, protocol: int
+) -> None:
+    """Reject a memoized dtype changed to object-bearing after an array uses it."""
+    dtype = np.dtype("i8", copy=True)
+    serialized = pickle.dumps({"array": np.zeros(1, dtype=dtype)}, protocol=protocol)
+    memo_index = 0
+    dtype_memo: int | None = None
+    reduced = False
+    for opcode, _argument, _position in pickletools.genops(serialized):
+        if opcode.name == "REDUCE":
+            reduced = True
+        elif opcode.name == "MEMOIZE":
+            if reduced:
+                dtype_memo = memo_index
+            memo_index += 1
+            reduced = False
+        elif opcode.name == "BUILD":
+            break
+        else:
+            reduced = False
+    assert dtype_memo is not None and dtype_memo < 256
+    assert serialized[2:3] == b"\x95"  # The small fixture occupies one pickle frame.
+    dtype_state = (3, "<", None, None, None, -1, -1, 1)
+    mutation = (
+        b"h" + bytes((dtype_memo,)) + pickle.dumps(dtype_state, protocol=2)[2:-1] + b"b0"
+    )
+    frame_size = int.from_bytes(serialized[3:11], "little") + len(mutation)
+    properties = tmp_path / "case.pkl"
+    properties.write_bytes(
+        serialized[:3]
+        + frame_size.to_bytes(8, "little")
+        + serialized[11:-1]
+        + mutation
+        + b"."
+    )
+
+    with pytest.raises(ContractError):
+        load_properties_pickle(properties)
+
+
+def test_case_properties_reject_rebuilding_frombuffer_array(tmp_path: Path) -> None:
+    """A pickle BUILD must not bypass validation on an already rebuilt array."""
+    serialized = pickle.dumps({"array": np.zeros(1, dtype="i8")}, protocol=5)
+    reduce_memos: list[int] = []
+    memo_index = 0
+    reduced = False
+    for opcode, _argument, _position in pickletools.genops(serialized):
+        if opcode.name == "REDUCE":
+            reduced = True
+        elif opcode.name == "MEMOIZE":
+            if reduced:
+                reduce_memos.append(memo_index)
+            memo_index += 1
+            reduced = False
+        else:
+            reduced = False
+    assert len(reduce_memos) == 2
+    dtype_memo, array_memo = reduce_memos
+    assert dtype_memo < 256 and array_memo < 256
+    assert serialized[2:3] == b"\x95"
+    # Replay an otherwise valid legacy state on the protocol-5 array result.
+    rebuild = (
+        b"h"
+        + bytes((array_memo,))
+        + b"(K\x01K\x01\x85h"
+        + bytes((dtype_memo,))
+        + b"\x89C\x08"
+        + bytes(8)
+        + b"tb0"
+    )
+    frame_size = int.from_bytes(serialized[3:11], "little") + len(rebuild)
+    properties = tmp_path / "case.pkl"
+    properties.write_bytes(
+        serialized[:3] + frame_size.to_bytes(8, "little") + serialized[11:-1] + rebuild + b"."
+    )
+
+    with pytest.raises(ContractError):
+        load_properties_pickle(properties)

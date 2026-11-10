@@ -6,6 +6,7 @@ import math
 import pickle
 import pickletools
 from collections.abc import Sequence
+from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 from typing import Literal, cast
@@ -51,7 +52,15 @@ def _safe_numpy_dtype(
         raise pickle.UnpicklingError("NumPy dtype is invalid") from error
     if dtype.hasobject or dtype.itemsize > _MAX_PROPERTIES_BYTES:
         raise pickle.UnpicklingError("object or oversized NumPy dtypes are not supported")
-    return dtype
+    # np.dtype(..., copy=True) can still return the same mutable dtype object.
+    # Arrays must not share one that a later pickle BUILD can change in place.
+    try:
+        snapshot = cast(np.dtype[np.generic], deepcopy(dtype))
+    except (TypeError, ValueError, OverflowError, MemoryError, RecursionError) as error:
+        raise pickle.UnpicklingError("NumPy dtype is invalid") from error
+    if snapshot.hasobject or snapshot.itemsize > _MAX_PROPERTIES_BYTES:
+        raise pickle.UnpicklingError("object or oversized NumPy dtypes are not supported")
+    return snapshot
 
 
 def _safe_numpy_shape(value: object) -> tuple[int, ...]:
@@ -94,10 +103,14 @@ class _ArrayBudget:
 class _PendingNumpyArray:
     """Validate the state supplied by NumPy's legacy array pickle protocol."""
 
-    def __init__(self, budget: _ArrayBudget) -> None:
+    def __init__(
+        self,
+        budget: _ArrayBudget,
+        value: npt.NDArray[np.generic] | None = None,
+    ) -> None:
         """Retain the shared array budget until the pickle state is validated."""
         self._budget = budget
-        self._value: npt.NDArray[np.generic] | None = None
+        self._value = value
 
     def __setstate__(self, state: object) -> None:
         """Validate legacy NumPy state, charge its allocation and copy the array."""
@@ -110,9 +123,9 @@ class _PendingNumpyArray:
         if isinstance(version, bool) or version not in (0, 1):
             raise pickle.UnpicklingError("NumPy array state version is unsupported")
         parsed_shape = _safe_numpy_shape(shape)
-        if not isinstance(dtype, np.dtype) or dtype.hasobject:
+        if not isinstance(dtype, np.dtype):
             raise pickle.UnpicklingError("NumPy array dtype is invalid")
-        parsed_dtype = cast(np.dtype[np.generic], dtype)
+        parsed_dtype = _safe_numpy_dtype(cast(np.dtype[np.generic], dtype))
         if not isinstance(is_fortran, bool):
             raise pickle.UnpicklingError("NumPy array order flag must be boolean")
         if not isinstance(buffer, (bytes, bytearray)):
@@ -131,6 +144,8 @@ class _PendingNumpyArray:
         """Return the validated array, rejecting missing pickle state."""
         if self._value is None:
             raise pickle.UnpicklingError("NumPy array state is missing")
+        if self._value.dtype.hasobject or self._value.nbytes > _MAX_PROPERTIES_BYTES:
+            raise pickle.UnpicklingError("NumPy array is unsafe")
         return self._value
 
 
@@ -141,6 +156,15 @@ class _PropertiesUnpickler(pickle.Unpickler):
         """Create a restricted unpickler with a shared NumPy allocation budget."""
         super().__init__(file)
         self._array_budget = _ArrayBudget()
+        self._dtypes: list[np.dtype[np.generic]] = []
+
+    def validate_dtypes(self) -> None:
+        """Reject dtype objects mutated after an array or scalar was rebuilt."""
+        if any(
+            dtype.hasobject or dtype.itemsize > _MAX_PROPERTIES_BYTES
+            for dtype in self._dtypes
+        ):
+            raise pickle.UnpicklingError("object or oversized NumPy dtypes are not supported")
 
     def find_class(self, module: str, name: str) -> object:
         """Resolve only the small allowlist of NumPy reconstruction globals.
@@ -179,7 +203,9 @@ class _PropertiesUnpickler(pickle.Unpickler):
         copy: object = False,
     ) -> np.dtype[np.generic]:
         """Build a dtype through the restricted NumPy dtype validator."""
-        return _safe_numpy_dtype(descriptor, align=align, copy=copy)
+        dtype = _safe_numpy_dtype(descriptor, align=align, copy=copy)
+        self._dtypes.append(dtype)
+        return dtype
 
     def _numpy_frombuffer(
         self,
@@ -187,7 +213,7 @@ class _PropertiesUnpickler(pickle.Unpickler):
         dtype: object,
         shape: object,
         order: object,
-    ) -> npt.NDArray[np.generic]:
+    ) -> _PendingNumpyArray:
         """Rebuild an array from raw bytes, requiring the buffer length to match shape and dtype.
 
         The result is a writable copy and counts against the unpickler's array budget.
@@ -206,7 +232,9 @@ class _PropertiesUnpickler(pickle.Unpickler):
             )
         self._array_budget.consume(expected)
         values = cast(npt.NDArray[np.generic], np.frombuffer(buffer, dtype=parsed_dtype))
-        return values.reshape(parsed_shape, order=parsed_order).copy()
+        return _PendingNumpyArray(
+            self._array_budget, values.reshape(parsed_shape, order=parsed_order).copy()
+        )
 
     def _numpy_reconstruct(
         self,
@@ -345,9 +373,11 @@ def load_properties_pickle(path: str | Path) -> dict[str, object]:
                 raise ContractError(f"properties file exceeds 64 MiB: {source}")
         _reject_unsafe_opcodes(serialized)
         stream = BytesIO(serialized)
-        payload = cast(object, _PropertiesUnpickler(stream).load())
+        unpickler = _PropertiesUnpickler(stream)
+        payload = cast(object, unpickler.load())
         if stream.read(1):
             raise pickle.UnpicklingError("trailing data after properties payload")
+        unpickler.validate_dtypes()
     except ContractError:
         raise
     except (
