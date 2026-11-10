@@ -333,7 +333,8 @@ def cached_conversion(
     checkpoint keeps its recorded size and modification time; otherwise it is
     replaced. Every available fold is converted, so later fold selections reuse it.
     """
-    # Name the cache after the path as given (nnUNet_results layout), not a symlink target.
+    # Normalize dot components in the cache name without resolving symlink aliases.
+    # A trailing /.. must never become a cache entry passed to rmtree.
     folder = Path(trained_folder).absolute()
     available = detect_upstream_folds(folder, checkpoint_name=checkpoint_name)
     wanted = available if folds is None else model_metadata.validate_folds(folds)
@@ -341,7 +342,16 @@ def cached_conversion(
     if missing:
         raise ContractError(f"folds {missing} have no {checkpoint_name} in {folder}")
     root = Path(cache or os.environ.get("NNUNET_MLX_CACHE", "~/.cache/nnunet-mlx")).expanduser()
-    target = root / "converted" / folder.parent.name / folder.name
+    cache_folder = Path(os.path.normpath(str(folder)))
+    if not cache_folder.name or not cache_folder.parent.name:
+        raise ContractError("trained folder needs dataset and model directory names")
+    dataset_cache = root / "converted" / cache_folder.parent.name
+    expected_parent = root.resolve() / "converted" / cache_folder.parent.name
+    if dataset_cache.resolve() != expected_parent:
+        raise ContractError(f"conversion cache has a symlinked parent: {dataset_cache}")
+    target = dataset_cache / cache_folder.name
+    if target.is_symlink():
+        raise ContractError(f"conversion cache entry must not be a symlink: {target}")
     if _conversion_is_current(target, folder, available, checkpoint_name):
         return target
     if target.exists():
