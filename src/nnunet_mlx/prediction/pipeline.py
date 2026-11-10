@@ -262,8 +262,9 @@ class ModelFolderPredictor:
                 probability grid need not have the source NIfTI's axis order.
             overwrite: Replace existing outputs instead of raising.
             logits_file: If given, also save the fold-averaged network logits,
-                ``(C, *spatial)`` float32 in preprocessed space (before resampling
-                back to the input grid), as a ``.npy`` stream.
+                ``(C, *spatial)`` in preprocessed space (before resampling back to
+                the input grid), as a ``.npy`` stream: float16 with ``nnunet-fp16``
+                accumulation, float32 otherwise.
 
         Raises:
             ContractError: If outputs or ``logits_file`` already exist without

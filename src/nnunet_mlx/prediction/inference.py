@@ -38,7 +38,8 @@ def average_fold_logits(
         models: One callable per fold, each mapping a channels-last tile to logits.
         data_channels_first: Finite float32 preprocessed ``(C, *spatial)`` data in the
             plans' axis order.
-        patch_size: Patch shape; two entries select 2-D inference slice by slice.
+        patch_size: Patch shape. With two entries, ``(C, S, H, W)`` data runs
+            slice by slice along ``S`` and ``(C, H, W)`` data runs directly.
         num_outputs: Number of network output channels.
         mirroring_axes: Spatial axes for test-time mirroring.
         step_fraction: Sliding-window stride as a fraction of the patch size.

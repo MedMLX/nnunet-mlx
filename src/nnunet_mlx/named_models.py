@@ -322,6 +322,7 @@ class LiverCohort:
     """Prepared liver model with the named runner's case argument names."""
 
     def __init__(self, prepared: medmlx.PreparedModel) -> None:
+        """Own ``prepared``, released by ``close``."""
         self._prepared = prepared
 
     def run(self, *, image_path: str, output_dir: str, overwrite: bool = False) -> RunResult:

@@ -70,7 +70,7 @@ def gaussian_importance(patch_size: tuple[int, ...]) -> FloatArray:
 
     The Gaussian is centered at ``size // 2`` with sigma ``size / 8`` per axis, as
     upstream's ``compute_gaussian``, but built analytically instead of by filtering
-    an impulse, and with exact zeros replaced by the smallest positive float32. The
+    an impulse, and with exact zeros replaced by the smallest positive normal float32. The
     accumulated logits are divided by the accumulated weights, so the overall scale
     cancels; ``nnunet_fp16_gaussian`` reproduces upstream's scaled float16 map for
     the half-precision path.
