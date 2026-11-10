@@ -224,7 +224,7 @@ def siam(
     Reproduces ``siam-pred -m 0`` (github.com/romainVala/SIAM): the network sees the
     volume in closest-canonical RAS voxel order, every fold is ensembled with
     Gaussian 0.5-step sliding windows and no mirroring, and the label map is returned
-    on the input grid. SIAM writes the reoriented label map back with nearest-neighbour
+    on the input grid. SIAM writes the reoriented label map back with nearest-neighbor
     resampling onto the input; for a pure axis permutation and flip that is the exact
     inverse reorientation used here.
 

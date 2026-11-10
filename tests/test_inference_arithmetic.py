@@ -82,7 +82,7 @@ def test_ordered_normalization_matches_cpu_statistics_and_affine() -> None:
 def test_inverse_square_root_resolves_near_float32_midpoint() -> None:
     """Check inverse-square-root rounding near an FP32 midpoint."""
     mx, _ = import_mlx()
-    # One correction rounded down; the CPU oracle rounds to the upper neighbour.
+    # One correction rounded down; the CPU oracle rounds to the upper neighbor.
     variance = mx.array([0.0005881802062503994], dtype=mx.float32)
     actual = inverse_standard_deviation(variance, 1e-5)
     mx.eval(actual)

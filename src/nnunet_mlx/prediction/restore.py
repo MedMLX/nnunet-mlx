@@ -115,7 +115,7 @@ def separate_plane_argmax(
     """Resize and reduce one target plane at a time for a separate axis.
 
     ``values`` is ``(C, X, Y, Z)``; ``axis`` is the spatial axis resampled separately
-    with nearest-neighbour indices (``order_z == 0``) while the other two axes are
+    with nearest-neighbor indices (``order_z == 0``) while the other two axes are
     resized with spline ``order``. Returns uint16 argmax labels of shape ``target_shape``.
     """
 
