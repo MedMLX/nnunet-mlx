@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 type HostArray = npt.NDArray[np.generic]
 type FloatArray = npt.NDArray[np.float32]
+type LogitArray = npt.NDArray[np.float16] | npt.NDArray[np.float32]
 
 
 def compute_steps(
@@ -144,13 +145,38 @@ def predict_logits(
         ContractError: If the input, patch, class count or mirroring axes are invalid,
             the model output has the wrong shape or dtype, or the logits are non-finite.
     """
+    logits = predict_host_logits(
+        model, data_channels_first, patch_size=patch_size, num_classes=num_classes,
+        mirroring_axes=mirroring_axes, step_fraction=step_fraction, accumulation=accumulation,
+    )
+    return np.asarray(logits, dtype=np.float32)
 
+
+def predict_host_logits(
+    model: PredictionModel,
+    data_channels_first: HostArray,
+    *,
+    patch_size: Sequence[int],
+    num_classes: int,
+    mirroring_axes: Sequence[int] = (),
+    step_fraction: float = 0.5,
+    accumulation: str = "float32",
+) -> LogitArray:
+    """Return ``predict_logits`` in the accumulation dtype: float16 for ``nnunet-fp16``.
+
+    The float16 slabs are already rounded, so the values equal ``predict_logits``
+    exactly while the host volume takes half the memory and no conversion.
+    """
     patch, axes = _validate_request(data_channels_first, patch_size, num_classes, mirroring_axes)
     padded, crop = _pad_minimum(data_channels_first, patch)
     mx, _ = import_mlx()
-    dtype = mx.float16 if accumulation == "nnunet-fp16" else mx.float32
+    upstream_fp16 = accumulation == "nnunet-fp16"
+    dtype = mx.float16 if upstream_fp16 else mx.float32
     cropped_shape = tuple(int(item.stop - item.start) for item in crop)
-    output = np.empty((num_classes, *cropped_shape), dtype=np.float32)
+    shape = (num_classes, *cropped_shape)
+    output: LogitArray = (
+        np.empty(shape, dtype=np.float16) if upstream_fp16 else np.empty(shape, dtype=np.float32)
+    )
 
     def store(start: int, stop: int, normalized: array) -> None:
         # Transpose each finalized slab into the channel-first host volume.
@@ -159,7 +185,7 @@ def predict_logits(
         lower, upper = max(start, first.start), min(stop, first.stop)
         if lower >= upper:
             return
-        host = np.asarray(normalized, dtype=np.float32)
+        host = np.asarray(normalized, dtype=output.dtype)
         selected = host[(slice(lower - start, upper - start), *crop[1:])]
         output[:, lower - first.start : upper - first.start] = np.moveaxis(selected, -1, 0)
 

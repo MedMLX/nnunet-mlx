@@ -9,7 +9,7 @@ import numpy as np
 import numpy.typing as npt
 
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.prediction.sliding_window import predict_logits
+from nnunet_mlx.prediction.sliding_window import predict_host_logits
 from nnunet_mlx.runtime import validate_inference_execution
 
 if TYPE_CHECKING:
@@ -71,13 +71,13 @@ def average_fold_logits(
             step_fraction=step_fraction,
             accumulation=accumulation,
         )
-        # Upstream retains half tensors across fold addition and division.
-        values = current.astype(np.float16) if upstream_fp16 else current
+        # Upstream retains half tensors across fold addition and division; each
+        # fold already arrives in float16 for nnunet-fp16.
         if total is None:
             # Each fold's logits are freshly allocated, so the sum can own them.
-            total = values
+            total = current
         else:
-            total += values
+            total += current
     if total is None:
         raise AssertionError("fold ensemble unexpectedly produced no logits")
     total /= np.float32(len(models))
@@ -169,17 +169,22 @@ def _predict_model_logits(
     mirroring_axes: Sequence[int],
     step_fraction: float,
     accumulation: str,
-) -> FloatArray:
+) -> LogitArray:
     # A 2-D network on (C, S, H, W) data runs on each slice along axis 1 independently.
-    """Run sliding-window logits for one model using the requested accumulation mode."""
+    """Run sliding-window logits for one model, in the accumulation dtype."""
     if len(patch_size) == 2 and data.ndim == 4:
         if data.shape[1] == 0:
             raise ContractError("2-D volume inference requires at least one slice")
         # Each slice is already restored to its input size. Write it into the
         # final channel-first volume instead of retaining slices alongside stack.
-        output = np.empty((num_outputs, *data.shape[1:]), dtype=np.float32)
+        shape = (num_outputs, *data.shape[1:])
+        output: LogitArray = (
+            np.empty(shape, dtype=np.float16)
+            if accumulation == "nnunet-fp16"
+            else np.empty(shape, dtype=np.float32)
+        )
         for slice_index in range(int(data.shape[1])):
-            output[:, slice_index] = predict_logits(
+            output[:, slice_index] = predict_host_logits(
                 model,
                 data[:, slice_index],
                 patch_size=patch_size,
@@ -189,7 +194,7 @@ def _predict_model_logits(
                 accumulation=accumulation,
             )
         return output
-    return predict_logits(
+    return predict_host_logits(
         model,
         data,
         patch_size=patch_size,
