@@ -802,13 +802,15 @@ def _decode(
     final_upsample: ArrayTransform | None = None,
     materialize: bool = False,
 ) -> NetworkOutput:
-    """Run the decoder over encoder ``skips`` (shallowest first) and return the last head.
+    """Pop encoder ``skips`` from deepest to shallowest and return the final head.
 
     Intermediate segmentation heads are not evaluated (no deep supervision).
     ``final_upsample`` optionally replaces the last stage's upsample module, and
     ``materialize`` evaluates each stage to bound the Metal graph size.
+    Consumed skips leave the caller-owned list before evaluation, so Python
+    references do not retain their buffers after the graph's last use.
     """
-    hidden = skips[-1]
+    hidden = skips.pop()
     outputs: list[array] = []
     for index in range(decoders):
         upsample = (
@@ -816,7 +818,7 @@ def _decode(
             if final_upsample is not None and index == decoders - 1
             else getattr(owner, f"up{index}")
         )
-        skip = skips[-(index + 2)]
+        skip = skips.pop()
         decoder = getattr(owner, f"dec{index}")
         # Inference arithmetic may fuse upsampling, concatenation and padding.
         fused = getattr(decoder, "upsample_concat", None)
@@ -828,6 +830,7 @@ def _decode(
                 hidden = decoder.concatenated((hidden, skip))
             else:
                 hidden = decoder(_mx().concatenate((hidden, skip), axis=-1))
+        del skip
         _eval_stage(hidden, enabled=materialize)
         if index == decoders - 1:
             outputs.append(getattr(owner, f"seg{index}")(hidden))
