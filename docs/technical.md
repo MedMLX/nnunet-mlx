@@ -154,6 +154,13 @@ each, 0.6.4 first:
 Single sequential runs include the sustained-clock variation described above,
 so the paired per-tile numbers are the better estimate of the speedup.
 
+Each mirrored view is now queued for evaluation as soon as its graph is built, so
+the eight forwards of a tile run one after another instead of interleaved. On a
+27-tile, 192×256×256 crop of `amos_0008` with the released weights, the logits are
+bitwise unchanged, the time is unchanged (15.4 vs 15.6 s), and the peak footprint
+falls from 11.6 to 4.9 GB (MLX peak 6.5 to 3.3 GB). For one mirrored 128³ tile, paired
+runs give 924 vs 914 ms (×0.98-1.05) and a footprint of 10.7 vs 4.0 GB.
+
 For comparison, the pinned upstream PyTorch network (nnU-Net 2.8.1,
 dynamic-network-architectures 0.4.4, torch 2.13.0) with the same weights takes
 291 ms per 128³ forward pass on MPS and 4,148 ms on the CPU.

@@ -41,6 +41,10 @@ class InferenceRuntime(Protocol):
         """Evaluate the supplied lazy MLX values."""
         ...
 
+    def async_eval(self, *args: object) -> None:
+        """Schedule evaluation of the supplied lazy MLX values without waiting."""
+        ...
+
     def contiguous(self, value: array) -> array:
         """Return a contiguous MLX array."""
         ...

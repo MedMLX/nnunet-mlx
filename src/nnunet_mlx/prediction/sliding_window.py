@@ -465,7 +465,9 @@ def mirrored_prediction(
     """Average the tile and its mirrored predictions, flipped back, in upstream order.
 
     Mirrored inputs are made contiguous before the network; outputs stay on
-    Metal and are summed lazily, so the mirrored forwards queue back to back.
+    Metal and are summed lazily. Each view is queued with ``async_eval`` once
+    built, so the forwards run one after another rather than interleaved in one
+    graph, which bounds intermediates to about one forward at unchanged speed.
     """
     expected_shape = (*tile.shape[:-1], num_classes)
     raw_prediction = model(tile)
@@ -474,6 +476,7 @@ def mirrored_prediction(
     if not axes:
         return prediction
     predictions = [prediction]
+    mx.async_eval(prediction)
     for axis_count in range(1, len(axes) + 1):
         for selected in combinations(axes, axis_count):
             mlx_axes = tuple(axis + 1 for axis in selected)
@@ -481,6 +484,7 @@ def mirrored_prediction(
             raw_prediction = model(mirrored)
             _validate_prediction(raw_prediction, expected_shape, mx)
             predictions.append(mx.flip(cast("array", raw_prediction), axis=mlx_axes))
+            mx.async_eval(predictions[-1])
     return sum(predictions[1:], predictions[0]) / len(predictions)
 
 
