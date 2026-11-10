@@ -22,6 +22,7 @@ from nnunet_mlx.prediction.export import (
     RestoredPrediction,
     completion_receipt_path,
     export_prediction,
+    predict_same_grid_segmentation,
     prediction_is_complete,
     prediction_output_files,
     require_prediction_destination,
@@ -47,6 +48,8 @@ from nnunet_mlx.runtime import (
 
 if TYPE_CHECKING:
     from nibabel.nifti1 import Nifti1Image
+
+    from nnunet_mlx.prediction.nifti import NiftiPrediction
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +231,20 @@ class ModelFolderPredictor:
         from nnunet_mlx.prediction.nifti import predict_nifti
 
         return predict_nifti(self, image)
+
+    def predict_nifti_probabilities(self, image: Nifti1Image) -> NiftiPrediction:
+        """Return source-grid labels, reader-grid probabilities and geometry without I/O.
+
+        Uses the same single-channel 3-D class-model admission as predict_nifti,
+        and exactly the probability restoration path of predict_case. The
+        probabilities retain reader axes; the returned properties include reader
+        geometry, crop and label metadata. No source filenames are invented.
+        SimpleITKIO additionally requires consistent coded NIfTI forms and
+        orthonormal axes; ambiguous geometry raises ContractError.
+        """
+        from nnunet_mlx.prediction.nifti import predict_nifti_probabilities
+
+        return predict_nifti_probabilities(self, image)
 
     def predict_case(
         self,
@@ -635,7 +652,8 @@ class ModelFolderPredictor:
         """Return host logits, or labels restored without leaving Metal.
 
         Label-only 3-D class predictions keep fold logits on Metal through
-        resampling and argmax, transferring only uint16 labels. Cases the fused
+        resampling and argmax, transferring only uint16 labels. One same-grid
+        fold streams labels without a full logit volume. Cases the fused
         restoration rejects receive the same logits on the host instead.
         """
         if (
@@ -645,6 +663,12 @@ class ModelFolderPredictor:
             or len(self.predictor.patch_size) != 3
         ):
             return self.predictor.predict_logits_from_preprocessed_data(prepared.data), None
+        streamed = predict_same_grid_segmentation(
+            self.predictor, prepared.data, prepared.properties,
+            self.bundle.plans, self.bundle.semantics,
+        )
+        if streamed is not None:
+            return None, streamed
         device_logits = self.predictor.predict_device_logits_from_preprocessed_data(prepared.data)
         restored = restore_device_segmentation(
             device_logits, prepared.properties, self.bundle.plans, self.bundle.semantics

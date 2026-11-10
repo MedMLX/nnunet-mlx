@@ -1,8 +1,10 @@
-"""In-memory NIfTI preparation and label restoration for one 3-D class model."""
+"""In-memory NIfTI preparation, labels and probabilities for one 3-D class model."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from copy import deepcopy
+from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING, cast
 
@@ -12,23 +14,56 @@ import numpy.typing as npt
 
 from nnunet_mlx.data.preprocessing import preprocess_raw_case
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.prediction.export import restore_device_segmentation, restore_prediction
+from nnunet_mlx.prediction.export import (
+    predict_same_grid_segmentation,
+    restore_device_segmentation,
+    restore_prediction,
+)
 from nnunet_mlx.prediction.inference import device_logits_to_host
-from nnunet_mlx.prediction.sliding_window import predict_labels
 from nnunet_mlx.storage.imageio import label_dtype, resolve_image_reader
 
 if TYPE_CHECKING:
     from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
 
 
+@dataclass(frozen=True)
+class NiftiPrediction:
+    """Source-grid labels, reader-grid probabilities and their verified geometry.
+
+    ``probabilities`` is float32 ``(C, Z, Y, X)`` in the selected reader's grid;
+    NibabelIOWithReorient retains canonical reader axes here. ``properties``
+    carries reader geometry, crop, label metadata and an empty ``inputs`` list
+    because no file was read. Labels retain the supplied image's shape/header.
+    Returned arrays and metadata do not borrow mutable model state.
+    """
+
+    segmentation: nib.Nifti1Image
+    probabilities: npt.NDArray[np.float32]
+    properties: dict[str, object]
+
+
 def predict_nifti(
     predictor: ModelFolderPredictor, image: nib.Nifti1Image,
 ) -> nib.Nifti1Image:
-    """Predict labels for one in-memory NIfTI image; see ``ModelFolderPredictor.predict_nifti``.
+    """Return labels without probability storage; see ModelFolderPredictor.predict_nifti."""
+    return _predict_nifti(predictor, image, return_probabilities=False)[0]
 
-    Voxel data must be real and finite before and after conversion to float32. The returned
-    labels retain the input image's geometry and header fields.
-    """
+
+def predict_nifti_probabilities(
+    predictor: ModelFolderPredictor, image: nib.Nifti1Image,
+) -> NiftiPrediction:
+    """Return probability-path labels and reader-grid probabilities without file I/O."""
+    segmentation, probabilities, properties = _predict_nifti(
+        predictor, image, return_probabilities=True,
+    )
+    assert probabilities is not None
+    return NiftiPrediction(segmentation, probabilities, properties)
+
+
+def _predict_nifti(
+    predictor: ModelFolderPredictor, image: nib.Nifti1Image, *, return_probabilities: bool,
+) -> tuple[nib.Nifti1Image, npt.NDArray[np.float32] | None, dict[str, object]]:
+    """Prepare finite real voxels and restore on the existing reader/crop boundaries."""
     bundle = predictor.bundle
     runner = predictor.predictor
     reader = resolve_image_reader(bundle.image_reader_writer)
@@ -72,24 +107,25 @@ def predict_nifti(
         unit = active.header.get_xyzt_units()[0]
         scale = 1000.0 if unit == "meter" else 0.001 if unit == "micron" else 1.0
         spacing = tuple(value * scale for value in spacing)
-    prepared = preprocess_raw_case(data, {"spacing": spacing}, bundle.plans)
-    crop_shape = cast(
-        "tuple[int, int, int]", prepared.properties["shape_after_cropping_and_before_resampling"],
-    )
-    if len(runner.models) == 1 and prepared.data.shape[1:] == crop_shape:
-        # One fold without logit resampling reduces each finished slab on Metal.
-        cropped = predict_labels(
-            runner.models[0], prepared.data, patch_size=runner.patch_size,
-            num_classes=runner.num_outputs, mirroring_axes=runner.mirroring_axes,
-            step_fraction=runner.step_fraction, accumulation=runner.accumulation,
+    properties: dict[str, object] = {"spacing": spacing}
+    if return_probabilities:
+        properties.update(_reader_geometry(image, active, reader))
+    prepared = preprocess_raw_case(data, properties, bundle.plans)
+    probabilities = None
+    if return_probabilities:
+        logits = runner.predict_logits_from_preprocessed_data(prepared.data)
+        restored = restore_prediction(
+            logits, prepared.properties, bundle.plans, bundle.semantics, return_probabilities=True,
         )
-        shape_before = cast("tuple[int, int, int]", prepared.properties["shape_before_cropping"])
-        bounding_box = cast("list[list[int]]", prepared.properties["bbox_used_for_cropping"])
-        uncropped = np.zeros(shape_before, dtype=np.uint16)
-        uncropped[tuple(slice(lower, upper) for lower, upper in bounding_box)] = cropped
-        segmentation = uncropped.transpose(bundle.plans.transpose_backward)
+        segmentation, probabilities = restored.segmentation, restored.probabilities
     else:
-        segmentation = _restored_ensemble_labels(predictor, prepared.data, prepared.properties)
+        streamed = predict_same_grid_segmentation(
+            runner, prepared.data, prepared.properties, bundle.plans, bundle.semantics,
+        )
+        if streamed is not None:
+            segmentation = streamed.segmentation
+        else:
+            segmentation = _restored_ensemble_labels(predictor, prepared.data, prepared.properties)
     labels = segmentation.transpose(2, 1, 0)
     result = nib.Nifti1Image(labels.astype(label_dtype(labels), copy=False), active.affine)
     if reorient:
@@ -104,9 +140,13 @@ def predict_nifti(
             or not np.allclose(result_affine, affine, rtol=0, atol=1e-5)):
         raise ContractError("in-memory prediction geometry differs from its NIfTI input")
     restored_labels = np.asanyarray(result.dataobj)
-    return nib.Nifti1Image(
+    result = nib.Nifti1Image(
         restored_labels, affine, image.header.copy(), dtype=label_dtype(restored_labels),
     )
+    if return_probabilities:
+        prepared.properties.update(inputs=[], labels=deepcopy(bundle.dataset_json["labels"]),
+                                   regions_class_order=None)
+    return result, probabilities, prepared.properties
 
 
 def _restored_ensemble_labels(
@@ -125,3 +165,40 @@ def _restored_ensemble_labels(
             host, properties, bundle.plans, bundle.semantics, return_probabilities=False,
         )
     return restored.segmentation
+
+
+def _reader_geometry(
+    image: nib.Nifti1Image, active: nib.Nifti1Image, reader: str,
+) -> dict[str, object]:
+    """Preserve NIfTI header geometry; convert RAS to ITK's LPS millimeter convention.
+
+    The header carries the same float32 sform/qform geometry a NIfTI-1 file
+    would serialize. Conflicting coded forms or sheared ITK axes are rejected
+    rather than choosing a different geometry from the file reader.
+    """
+    affine = np.asarray(image.header.get_best_affine(), dtype=np.float64)
+    if image.affine is None or not np.allclose(affine, image.affine, rtol=0, atol=1e-5):
+        raise ContractError("in-memory probability geometry differs from its NIfTI header")
+    if reader != "SimpleITKIO":
+        geometry: dict[str, object] = {"original_affine": affine}
+        if reader == "NibabelIOWithReorient":
+            geometry["reoriented_affine"] = np.asarray(active.header.get_best_affine(),
+                                                       dtype=np.float64)
+        return {"nibabel_stuff": geometry}
+    qform, qcode = image.header.get_qform(coded=True)
+    if qcode and (qform is None or not np.allclose(qform, affine, rtol=0, atol=1e-5)):
+        raise ContractError("in-memory SimpleITK probabilities require consistent NIfTI forms")
+    unit = image.header.get_xyzt_units()[0]
+    scale = 1000.0 if unit == "meter" else 0.001 if unit == "micron" else 1.0
+    spacing = np.asarray(image.header.get_zooms()[:3], dtype=np.float64)
+    if np.any(spacing <= 0) or not np.isfinite(spacing).all():
+        raise ContractError("in-memory probabilities require positive finite spacing")
+    lps = np.diag([-1.0, -1.0, 1.0])
+    direction = lps @ affine[:3, :3] / spacing
+    if not np.allclose(direction.T @ direction, np.eye(3), rtol=0, atol=1e-5):
+        raise ContractError("in-memory SimpleITK probabilities require orthonormal NIfTI axes")
+    return {"sitk_stuff": {
+        "spacing": tuple(float(value) for value in spacing * scale),
+        "origin": tuple(float(value) for value in lps @ affine[:3, 3] * scale),
+        "direction": tuple(float(value) for value in direction.ravel()),
+    }}

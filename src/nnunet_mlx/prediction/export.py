@@ -9,6 +9,8 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.metadata import version
+from itertools import product
+from math import prod
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -25,7 +27,12 @@ from nnunet_mlx.kernels.metal_restore import (
     resample_device_logits_argmax,
 )
 from nnunet_mlx.plans import PlansContract
-from nnunet_mlx.prediction.inference import logits_to_probabilities, probabilities_to_segmentation
+from nnunet_mlx.prediction.inference import (
+    ArrayPredictor,
+    logits_to_probabilities,
+    probabilities_to_segmentation,
+)
+from nnunet_mlx.prediction.sliding_window import predict_labels
 from nnunet_mlx.storage.imageio import (
     image_reader_output_sidecar,
     read_segmentation,
@@ -40,6 +47,7 @@ type FloatArray = npt.NDArray[np.float32]
 # Bump only when prediction, export, or continuation equivalence changes.
 PREDICTION_CONTRACT_VERSION = 4
 COMPLETION_RECEIPT_SCHEMA_VERSION = 3
+_PROBABILITY_CHUNK_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,8 +174,8 @@ def restore_prediction(
     )
     bounding_box = _bounding_box(properties.get("bbox_used_for_cropping"), shape_before)
 
+    restored_probabilities = None
     if not return_probabilities and not semantics.has_regions:
-        probabilities = None
         cropped_segmentation = _resample_class_logits_to_segmentation(
             values,
             properties,
@@ -178,36 +186,115 @@ def restore_prediction(
         if not np.isfinite(values).all():
             raise ContractError("prediction logits must be finite floating-point values")
         restored_values = _resample_logits_to_crop(values, properties, plans, crop_shape)
-        probabilities = logits_to_probabilities(
-            restored_values, has_regions=semantics.has_regions
-        )
-        cropped_segmentation = probabilities_to_segmentation(
-            probabilities,
-            regions_class_order=semantics.regions_class_order,
+        cropped_segmentation, restored_probabilities = _restore_probability_chunks(
+            restored_values, shape_before, bounding_box, plans, semantics,
+            return_probabilities=return_probabilities,
         )
 
     segmentation = _uncrop_segmentation(cropped_segmentation, shape_before, bounding_box, plans)
-    crop_slices = tuple(slice(start, stop) for start, stop in bounding_box)
-    restored_probabilities = None
-    if return_probabilities:
-        if probabilities is None:
-            raise AssertionError("probability restoration unexpectedly lacks probabilities")
-        uncropped = np.zeros(
-            (semantics.output_channels, *shape_before), dtype=np.float32
-        )
-        if not semantics.has_regions:
-            uncropped[0] = 1
-        uncropped[(slice(None), *crop_slices)] = probabilities
-        probability_transpose = (
-            0,
-            *(axis + 1 for axis in plans.transpose_backward),
-        )
-        restored_probabilities = np.ascontiguousarray(
-            uncropped.transpose(probability_transpose), dtype=np.float32
-        )
     return RestoredPrediction(
         segmentation=segmentation,
         probabilities=restored_probabilities,
+    )
+
+
+def _restore_probability_chunks(
+    values: FloatArray,
+    shape_before: tuple[int, int, int],
+    bounding_box: Sequence[tuple[int, int]],
+    plans: PlansContract,
+    semantics: LabelSemantics,
+    *,
+    return_probabilities: bool,
+) -> tuple[npt.NDArray[np.uint16], FloatArray | None]:
+    """Normalize all-class spatial blocks directly into the final reader grid.
+
+    Resampling supplies C-contiguous logits but may alias the caller; each block
+    therefore owns its normalization buffer. Only the requested final probability
+    array is volume-sized. Region label-only requests keep no probability volume.
+    """
+    crop_shape = values.shape[1:]
+    _validate_crop_shape(crop_shape, bounding_box)
+    segmentation = np.empty(crop_shape, dtype=np.uint16)
+    probabilities = None
+    destination = None
+    if return_probabilities:
+        reader_shape = tuple(shape_before[axis] for axis in plans.transpose_backward)
+        probabilities = np.zeros((semantics.output_channels, *reader_shape), dtype=np.float32)
+        if not semantics.has_regions:
+            probabilities[0] = 1
+        # Inverse-transpose views let blocks land directly in the one contiguous
+        # reader-order result, without a second uncropped probability allocation.
+        uncropped = probabilities.transpose((0, *(axis + 1 for axis in plans.transpose_forward)))
+        destination = uncropped[
+            (slice(None), *(slice(start, stop) for start, stop in bounding_box))
+        ]
+    remaining = max(1, _PROBABILITY_CHUNK_BYTES // (semantics.output_channels * values.itemsize))
+    block = [1, 1, 1]
+    for axis in (2, 1, 0):
+        block[axis] = min(crop_shape[axis], remaining)
+        remaining = max(1, remaining // block[axis])
+    for starts in product(*(
+        range(0, size, step) for size, step in zip(crop_shape, block, strict=True)
+    )):
+        slices = tuple(
+            slice(start, min(start + step, size))
+            for start, step, size in zip(starts, block, crop_shape, strict=True)
+        )
+        selected = values[(slice(None), *slices)]
+        singleton = not semantics.has_regions and selected.size == semantics.output_channels
+        if singleton and prod(crop_shape) > 1:
+            # The full C-order source sums classes along a non-fast axis. Two
+            # spatial lanes preserve that reduction order even at a one-voxel tail.
+            selected = np.concatenate((selected, selected), axis=-1)
+        current = logits_to_probabilities(selected, has_regions=semantics.has_regions)
+        if singleton:
+            current = current[..., :1]
+        segmentation[slices] = probabilities_to_segmentation(
+            current, regions_class_order=semantics.regions_class_order,
+        )
+        if destination is not None:
+            destination[(slice(None), *slices)] = current
+    return segmentation, probabilities
+
+
+def predict_same_grid_segmentation(
+    predictor: ArrayPredictor,
+    data: npt.NDArray[np.float32],
+    properties: Mapping[str, object],
+    plans: PlansContract,
+    semantics: LabelSemantics,
+) -> RestoredPrediction | None:
+    """Stream labels for one 3-D class fold with no logit-grid resampling.
+
+    Return ``None`` for ensembles, regions, 2-D models or changed spatial grids;
+    those cases must restore or average scores before choosing labels. Call only
+    when neither probabilities nor host logits were requested. Tile arithmetic,
+    crop restoration and inverse transposition match the existing logit path.
+    """
+    if (
+        len(predictor.models) != 1
+        or len(predictor.patch_size) != 3
+        or semantics.has_regions
+        or semantics.output_channels > np.iinfo(np.uint16).max
+    ):
+        return None
+    crop_shape = _shape(
+        properties.get("shape_after_cropping_and_before_resampling"),
+        name="shape_after_cropping_and_before_resampling",
+    )
+    if data.shape[1:] != crop_shape:
+        return None
+    shape_before = _shape(properties.get("shape_before_cropping"), name="shape_before_cropping")
+    bounding_box = _bounding_box(properties.get("bbox_used_for_cropping"), shape_before)
+    cropped = predict_labels(
+        predictor.models[0], data, patch_size=predictor.patch_size,
+        num_classes=predictor.num_outputs, mirroring_axes=predictor.mirroring_axes,
+        step_fraction=predictor.step_fraction, accumulation=predictor.accumulation,
+    )
+    return RestoredPrediction(
+        segmentation=_uncrop_segmentation(cropped, shape_before, bounding_box, plans),
+        probabilities=None,
     )
 
 

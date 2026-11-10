@@ -240,6 +240,14 @@ result = predictor.predict_case(
 print(result.metrics)  # synchronized timings, tile counts and processed shapes
 ```
 
+For a single-channel 3-D class model, `predictor.predict_nifti(image)` returns
+labels without file I/O. `predictor.predict_nifti_probabilities(image)` returns
+a `NiftiPrediction`: `segmentation` on the source grid, float32 `probabilities`
+in `(C, Z, Y, X)` reader order, and reader geometry/crop/label `properties`.
+The reorienting reader keeps canonical axes for probabilities. `inputs` is an
+empty list because no source file was read. SimpleITK probability geometry
+requires orthonormal axes and consistent coded NIfTI forms.
+
 `ModelFolderPredictor` accumulates sliding windows in float32, while the runners and the
 CLI accumulate in float16 as nnU-Net does, so their outputs can differ slightly.
 

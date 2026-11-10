@@ -15,6 +15,7 @@ from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 
 if TYPE_CHECKING:
     from nnunet_mlx.model.folder import ModelBundle, load_model_bundle
+    from nnunet_mlx.prediction.nifti import NiftiPrediction
     from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
     from nnunet_mlx.storage.conversion import read_conversion_manifest
     from nnunet_mlx.storage.upstream import convert_trained_model
@@ -25,6 +26,7 @@ __all__ = [
     "ContractError",
     "ModelBundle",
     "ModelFolderPredictor",
+    "NiftiPrediction",
     "PlainConvUNetSpec",
     "ResidualEncoderUNetSpec",
     "convert_trained_model",
@@ -38,6 +40,7 @@ __all__ = [
 _DEFERRED_EXPORTS = {
     "ModelBundle": "nnunet_mlx.model.folder",
     "ModelFolderPredictor": "nnunet_mlx.prediction.pipeline",
+    "NiftiPrediction": "nnunet_mlx.prediction.nifti",
     "load_model_bundle": "nnunet_mlx.model.folder",
     "read_conversion_manifest": "nnunet_mlx.storage.conversion",
     "convert_trained_model": "nnunet_mlx.storage.upstream",
