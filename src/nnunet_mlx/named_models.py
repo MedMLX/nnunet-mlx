@@ -79,42 +79,53 @@ def _run(
     folder: Path, images: Sequence[str], output_dir: str, configuration: str,
     folds: list[int] | None, *, overwrite: bool,
     source_profile: str = "nnunet-v2.8.1-default", arithmetic: str = "native",
-    use_mirroring: bool = True,
+    use_mirroring: bool = True, step_fraction: float = 0.5,
 ) -> RunResult:
     """Delegate inference and tensor/architecture admission to the generic runner."""
     return medmlx.run(
         weights_path=str(folder), image_paths=images, output_dir=output_dir,
         configuration=configuration, folds=folds, source_profile=source_profile,
-        arithmetic=arithmetic, use_mirroring=use_mirroring, overwrite=overwrite,
+        arithmetic=arithmetic, use_mirroring=use_mirroring, step_fraction=step_fraction,
+        overwrite=overwrite,
     )
 
 
 def liver(
     *, image_path: str, output_dir: str, weights_path: str | None = None,
-    overwrite: bool = False,
+    overwrite: bool = False, use_mirroring: bool = True, step_fraction: float = 0.5,
 ) -> RunResult:
-    """Segment liver CT; automatically obtain the named model when weights are omitted."""
-    medmlx.check_request([image_path], output_dir=output_dir, overwrite=overwrite)
+    """Segment liver CT; automatically obtain the named model when weights are omitted.
+
+    The defaults run the released configuration: three-axis mirroring (eight
+    network passes per tile) and a 0.5 step. ``use_mirroring=False`` runs one pass
+    per tile and a larger ``step_fraction`` runs fewer tiles; both change the
+    prediction.
+    """
+    medmlx.check_request([image_path], output_dir=output_dir, overwrite=overwrite,
+                         use_mirroring=use_mirroring, step_fraction=step_fraction)
     folder = (weights_dir("nnunet-liver") if weights_path is None
               else Path(weights_path).expanduser())
-    return _run(folder, [image_path], output_dir, "3d_fullres", None, overwrite=overwrite)
+    return _run(folder, [image_path], output_dir, "3d_fullres", None, overwrite=overwrite,
+                use_mirroring=use_mirroring, step_fraction=step_fraction)
 
 
 def autopet(
     *, image_paths: Sequence[str], output_dir: str, weights_path: str | None = None,
-    overwrite: bool = False,
+    overwrite: bool = False, use_mirroring: bool = True, step_fraction: float = 0.5,
 ) -> RunResult:
     """Segment co-registered CT and SUV PET, supplied in that order.
 
-    Every fold present in the model folder is ensembled.
+    Every fold present in the model folder is ensembled. ``use_mirroring`` and
+    ``step_fraction`` are as for ``liver``.
     """
-    medmlx.check_request(image_paths, output_dir=output_dir, overwrite=overwrite)
+    medmlx.check_request(image_paths, output_dir=output_dir, overwrite=overwrite,
+                         use_mirroring=use_mirroring, step_fraction=step_fraction)
     if len(image_paths) != 2:
         raise InvalidInputError("AutoPET requires image_paths in CT, then SUV PET order")
     folder = (weights_dir("nnunet-autopet") if weights_path is None
               else Path(weights_path).expanduser())
     return _run(folder, image_paths, output_dir, "3d_fullres_resenc_bs80", None,
-                overwrite=overwrite)
+                overwrite=overwrite, use_mirroring=use_mirroring, step_fraction=step_fraction)
 
 
 def pancreas(
@@ -323,8 +334,16 @@ class LiverCohort:
         self._prepared.close()
 
 
-def prepare_liver(*, weights_path: str | None = None) -> LiverCohort:
-    """Load the named liver model once for MedMLX's explicit cohort protocol."""
+def prepare_liver(
+    *, weights_path: str | None = None, use_mirroring: bool = True, step_fraction: float = 0.5,
+) -> LiverCohort:
+    """Load the named liver model once for MedMLX's explicit cohort protocol.
+
+    ``use_mirroring`` and ``step_fraction`` are as for ``liver``.
+    """
     folder = (weights_dir("nnunet-liver") if weights_path is None
               else Path(weights_path).expanduser())
-    return LiverCohort(medmlx.prepare(weights_path=str(folder), configuration="3d_fullres"))
+    return LiverCohort(medmlx.prepare(
+        weights_path=str(folder), configuration="3d_fullres",
+        use_mirroring=use_mirroring, step_fraction=step_fraction,
+    ))

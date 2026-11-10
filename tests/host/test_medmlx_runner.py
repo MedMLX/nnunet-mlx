@@ -30,7 +30,7 @@ RUNNERS: dict[str, Callable[..., object]] = {
 }
 # One case per rejection category; the categories a runner has no argument for are absent.
 REJECTIONS: dict[str, dict[str, dict[str, object]]] = {
-    "liver": {"non-bool": {"overwrite": "false"}},
+    "liver": {"out-of-range": {"step_fraction": 0}, "non-bool": {"use_mirroring": "false"}},
     "autopet": {"out-of-range": {"images": 1}, "non-bool": {"overwrite": "false"}},
     "pancreas": {"out-of-range": {"fold": -1}, "non-bool": {"use_mirroring": "false"}},
     "brats": {"out-of-range": {"fold": 5}, "non-bool": {"use_mirroring": "false"}},
