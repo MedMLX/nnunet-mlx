@@ -23,11 +23,11 @@ def upstream_runner_recording() -> UpstreamRecording:
     """Load the pinned upstream reference recorded on darwin-arm64."""
     import numpy as np
 
-    path = Path(__file__).parent / "fixtures" / "darwin-arm64" / "upstream_runner.npz"
+    path = Path(__file__).resolve().parents[1] / "work/real-reference/upstream_runner.npz"
     if not path.is_file():
         pytest.fail(
             "missing darwin-arm64 upstream fixture; record it on this host with the "
-            "upstream runner recorder from the dev branch"
+            "scripts/record_upstream_runner.py"
         )
     with np.load(path, allow_pickle=False) as saved:
         metadata = cast(RunnerRecording, json.loads(str(saved["metadata"].item())))

@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 from nnunet_reference.arrays import host_array
+from nnunet_reference.oracle.network import real_image_input
 
 from nnunet_mlx.model.topology import PlainConvUNetSpec
 
@@ -46,7 +47,7 @@ def test_forward_oracle_constructs_from_original_architecture_kwargs(
     )
     candidate = PlainConvUNet(spec)
     load_converted_state(candidate, convert_state_dict(source.state_dict()))
-    values = np.random.default_rng(31).normal(size=(1, 1, 8, 8, 8)).astype(np.float32)
+    values = real_image_input((8, 8, 8), 1)[None]
     with torch.no_grad():
         expected = source(torch.from_numpy(values)).numpy()
     mx, _ = import_mlx()

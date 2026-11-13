@@ -16,6 +16,7 @@ from nnunet_reference.oracle.metrics import (
     exact_array_parity,
     nested_tuple,
 )
+from nnunet_reference.real_cases import liver_crop, tumor_crop
 
 
 def run_plan_configuration_parity(
@@ -51,7 +52,7 @@ def run_raw_preprocessing_parity(
     use_mask_for_norm: bool = False,
     include_previous_stage: bool = False,
 ) -> ContractParityResult:
-    """Compare one synthetic raw-case preprocessing result with pinned nnU-Net.
+    """Compare an HCC-TACE raw-case preprocessing result with pinned nnU-Net.
 
     Uses a fixed single-channel 3-D fixture and optional previous-stage labels.
     The supplied plans are copied before the normalization options are changed;
@@ -73,10 +74,10 @@ def run_raw_preprocessing_parity(
     base["use_mask_for_norm"] = [use_mask_for_norm]
     intensity = (
         {
-            "mean": 5.0,
-            "std": 2.0,
-            "percentile_00_5": 2.0,
-            "percentile_99_5": 8.0,
+            "mean": 50.0,
+            "std": 100.0,
+            "percentile_00_5": -100.0,
+            "percentile_99_5": 200.0,
         }
         if normalization_scheme == "CTNormalization"
         else {}
@@ -85,15 +86,15 @@ def run_raw_preprocessing_parity(
     source_plans = plans_module.PlansManager(fixture_plans)
     source_configuration = source_plans.get_configuration("3d_fullres")
     data = np.zeros((1, 5, 6, 7), dtype=np.float32)
-    data[0, 1:5, 1:5, 2:7] = np.random.default_rng(101).uniform(
-        1, 10, size=(4, 4, 5)
-    )
+    image, liver = liver_crop((4, 4, 5))
+    data[0, 1:5, 1:5, 2:7] = image * np.float32(1024)
     properties: dict[str, object] = {"spacing": (2.5, 0.8, 0.7)}
     previous_stage = None
     if include_previous_stage:
         previous_stage = np.zeros(data.shape[1:], dtype=np.int16)[None]
-        previous_stage[0, 2:5, 2:5, 3:7] = 1
-        previous_stage[0, 2, 3, 4] = 2
+        region = previous_stage[0, 1:5, 1:5, 2:7]
+        region[liver > 0] = 1
+        region[tumor_crop((4, 4, 5)) > 0] = 2
     expected_data, expected_segmentation, expected_properties = (
         preprocessor_module.DefaultPreprocessor(verbose=False).run_case_npy(
             data,

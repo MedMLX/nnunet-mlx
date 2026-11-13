@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+from nnunet_reference.oracle.network import real_image_input
 
 from nnunet_mlx.prediction.sliding_window import predict_labels, predict_logits
 
@@ -28,7 +29,7 @@ def test_label_only_matches_normalized_host_logits(
         """Return synthetic logits for label-only comparison."""
         return mx.concatenate((values, -values, mx.zeros(values.shape) + 1e-5), axis=-1)
 
-    data = np.linspace(-1, 1, int(np.prod(shape)), dtype=np.float32).reshape((1, *shape))
+    data = real_image_input(shape, 1)
     expected = predict_logits(
         model, data, patch_size=(4, 4, 4), num_classes=3,
         step_fraction=0.5, accumulation=accumulation,
@@ -66,7 +67,7 @@ def test_streamed_labels_decline_cases_requiring_score_restoration(
     )
     crop_shape = [6, 4, 5] if restriction == "resample" else [3, 4, 5]
     result = predict_same_grid_segmentation(
-        runner, np.zeros((1, 3, 4, 5), dtype=np.float32),
+        runner, real_image_input((3, 4, 5), 1),
         {
             "shape_after_cropping_and_before_resampling": crop_shape,
             "shape_before_cropping": crop_shape,

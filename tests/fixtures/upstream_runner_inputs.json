@@ -308,7 +308,6 @@
       },
       "file_ending": ".nii.gz"
     },
-    "image_seed": 31,
     "weight_seeds": [
       910,
       911
@@ -379,6 +378,7 @@
         ],
         "step_fraction": 0.5
       }
-    ]
+    ],
+    "image_source": "HCC-TACE-Seg HCC_063 contrast CT"
   }
 }

@@ -48,8 +48,9 @@ with np.load(RECORDING, allow_pickle=False) as _saved:
 
 @pytest.fixture(scope="module")
 def recording() -> dict[str, NumericArray]:
-    """Load the recorded source resampling fixture."""
-    with np.load(RECORDING, allow_pickle=False) as saved:
+    """Load the real-image recording produced by the selected upstream source."""
+    path = Path(__file__).resolve().parents[1] / "work/real-reference/torch_resampling.npz"
+    with np.load(path, allow_pickle=False) as saved:
         return {name: saved[name] for name in saved.files if name != "metadata"}
 
 
@@ -159,13 +160,13 @@ def test_torch_plan_metal_label_restoration_boundary(
 def test_torch_parallel_restoration_does_not_use_spline_plane_shortcut(
     recording: dict[str, NumericArray],
 ) -> None:
-    """Avoid the spline plane shortcut for source-style parallel restoration."""
+    """Avoid the spline plane shortcut for controlled class-logit restoration."""
     case = next(row for row in RESAMPLING if row["name"] == "axis-1-nearest-data-nearest")
     actual = resample_class_logits_argmax_parallel(
-        recording[f"{case['name']}-input"],
+        recording["parallel_logits"],
         case["shape"],
         case["spacing"],
         case["new_spacing"],
         _contract(case["kwargs"]),
     )
-    np.testing.assert_array_equal(actual, recording[f"{case['name']}-expected"].argmax(axis=0))
+    np.testing.assert_array_equal(actual, recording["parallel_expected"].argmax(axis=0))

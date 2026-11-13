@@ -10,6 +10,7 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 import pytest
+from nnunet_reference.real_cases import liver_crop
 
 from nnunet_mlx.data.labels import parse_dataset_label_semantics
 from nnunet_mlx.data.preprocessing import preprocess_raw_case
@@ -53,11 +54,12 @@ def _payload(
 def _case(
     spacing: tuple[float, float, float] = (0.7, 1.6, 5.0),
 ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int16], dict[str, object]]:
-    """Create a synthetic case with a selected native input spacing."""
+    """Create a padded real CT case with controlled native input spacing."""
     data = np.zeros((1, 6, 8, 10), dtype=np.float32)
-    data[0, 1:5, 1:7, 2:9] = 1 + np.arange(168, dtype=np.float32).reshape(4, 6, 7)
+    image, liver = liver_crop((4, 6, 7))
+    data[0, 1:5, 1:7, 2:9] = image + np.float32(1)
     previous = np.zeros(data.shape, dtype=np.int16)
-    previous[0, 1:5, 1:7, 2:9] = (np.indices((4, 6, 7)).sum(axis=0) % 2).astype(np.int16)
+    previous[0, 1:5, 1:7, 2:9] = liver
     properties: dict[str, object] = {
         "spacing": spacing,
         "sitk_stuff": {

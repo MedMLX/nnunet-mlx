@@ -12,10 +12,12 @@ from nnunet_reference.oracle.metrics import (
     array_metrics,
     exact_array_parity,
 )
+from nnunet_reference.oracle.network import real_image_input
+from nnunet_reference.real_cases import liver_crop, tumor_crop
 
 
 def run_resampling_parity(*, anisotropic: bool) -> ContractParityResult:
-    """Compare one seeded float32 resampling fixture with pinned nnU-Net v2.8.1.
+    """Compare an HCC-TACE CT crop resampled with pinned nnU-Net v2.8.1.
 
     Uses linear in-plane interpolation and nearest out-of-plane interpolation;
     anisotropy selects the spacing fixture. The array gate uses rtol=atol=1e-6.
@@ -25,7 +27,7 @@ def run_resampling_parity(*, anisotropic: bool) -> ContractParityResult:
     from nnunet_mlx.plans import ResamplingContract
 
     source = import_module("nnunetv2.preprocessing.resampling.default_resampling")
-    data = np.random.default_rng(97).normal(size=(2, 4, 5, 6)).astype(np.float32)
+    data = real_image_input((4, 5, 6), 2)
     current_spacing = (5.0, 1.0, 1.0) if anisotropic else (1.2, 1.0, 0.8)
     new_spacing = (2.5, 0.8, 0.8) if anisotropic else (0.9, 1.1, 1.0)
     new_shape = (7, 6, 8)
@@ -70,7 +72,7 @@ def run_resampling_parity(*, anisotropic: bool) -> ContractParityResult:
 def run_segmentation_resampling_parity(
     *, anisotropic: bool, order_z: int = 0
 ) -> ExactParityResult:
-    """Compare one synthetic multi-label resampling fixture exactly with nnU-Net v2.8.1.
+    """Compare HCC-TACE label resampling exactly with nnU-Net v2.8.1.
 
     In-plane interpolation is order 1. ``order_z`` selects out-of-plane interpolation
     when the anisotropic fixture uses a separate axis.
@@ -80,10 +82,10 @@ def run_segmentation_resampling_parity(
     from nnunet_mlx.plans import ResamplingContract
 
     source = import_module("nnunetv2.preprocessing.resampling.default_resampling")
-    segmentation = np.zeros((1, 4, 5, 6), dtype=np.int16)
-    segmentation[0, 1:4, 1:4, 2:5] = 1
-    segmentation[0, 2, 2:5, 1:3] = 2
-    segmentation[0, 0, 0, 0] = -1
+    _, liver = liver_crop((4, 5, 6))
+    tumor = tumor_crop((4, 5, 6))
+    labels = np.where(tumor > 0, 2, liver).astype(np.int16)
+    segmentation = labels[None]
     current_spacing = (5.0, 1.0, 1.0) if anisotropic else (1.2, 1.0, 0.8)
     new_spacing = (2.5, 0.8, 0.8) if anisotropic else (0.9, 1.1, 1.0)
     new_shape = (7, 6, 8)

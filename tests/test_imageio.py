@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from importlib import import_module
 from pathlib import Path
 from typing import cast
@@ -20,13 +21,23 @@ from nnunet_mlx.storage.imageio import (
 )
 
 
+@pytest.fixture(scope="module")
+def real_ct() -> np.ndarray[tuple[int, ...], np.dtype[np.int16]]:
+    """Read an HCC-TACE-Seg contrast CT crop; the input remains outside Git."""
+    default = Path.home() / ".cache" / "medmlx" / "test-data" / "hcc_063_ct.nii.gz"
+    path = os.environ.get("MEDMLX_TEST_CT", str(default))
+    nibabel = import_module("nibabel")
+    image = nibabel.load(path)
+    return np.asarray(image.dataobj[200:206, 200:207, 40:48], dtype=np.int16)
+
+
 def _write_image(
     path: Path,
     array: np.ndarray[tuple[int, ...], np.dtype[np.float32]],
     *,
     origin: tuple[float, float, float] = (7.0, 8.0, 9.0),
 ) -> None:
-    """Write a synthetic image with known spatial geometry."""
+    """Write a real-image crop with controlled spatial geometry."""
     sitk = import_module("SimpleITK")
     image = sitk.GetImageFromArray(array)
     image.SetSpacing((0.7, 0.8, 2.5))
@@ -36,7 +47,7 @@ def _write_image(
 
 
 def _write_compound_image(path: Path, array: NumericArray) -> None:
-    """Write a synthetic multi-component image with spatial geometry."""
+    """Write real-image crops as a multi-component image with spatial geometry."""
     sitk = import_module("SimpleITK")
     image = sitk.GetImageFromArray(array, isVector=False)
     image.SetSpacing((0.7, 0.8, 2.5, 4.0))
@@ -46,10 +57,10 @@ def _write_compound_image(path: Path, array: NumericArray) -> None:
 
 
 @pytest.mark.oracle
-def test_simpleitk_reader_matches_pinned_oracle(tmp_path: Path) -> None:
+def test_simpleitk_reader_matches_pinned_oracle(tmp_path: Path, real_ct: np.ndarray) -> None:
     """Compare SimpleITK image loading against the pinned source reader."""
     source = tmp_path / "case_0000.nii.gz"
-    raw = np.arange(60, dtype=np.float32).reshape(3, 4, 5)
+    raw = real_ct[:5, :4, :3].transpose(2, 1, 0).astype(np.float32)
     _write_image(source, raw)
     source_reader = pytest.importorskip(
         "nnunetv2.imageio.simpleitk_reader_writer",
@@ -74,11 +85,12 @@ def test_simpleitk_reader_matches_pinned_oracle(tmp_path: Path) -> None:
 
 @pytest.mark.oracle
 def test_simpleitk_compound_reader_matches_oracle_and_exports_spatial_geometry(
-    tmp_path: Path,
+    tmp_path: Path, real_ct: np.ndarray,
 ) -> None:
     """Match compound image reading and preserve spatial output geometry."""
     source = tmp_path / "compound.nii.gz"
-    raw = np.arange(2 * 3 * 4 * 5, dtype=np.float32).reshape(2, 3, 4, 5)
+    raw = np.stack([real_ct[:5, :4, i:i + 3].transpose(2, 1, 0)
+                    for i in (0, 3)]).astype(np.float32)
     _write_compound_image(source, raw)
     source_reader = pytest.importorskip(
         "nnunetv2.imageio.simpleitk_reader_writer",
@@ -115,7 +127,11 @@ def test_natural_rgb_reader_and_writer_match_upstream_layout(tmp_path: Path) -> 
     """Match upstream RGB channel layout through natural image I/O."""
     image_io = import_module("skimage.io")
     source = tmp_path / "case_0000.png"
-    rgb = np.arange(5 * 7 * 3, dtype=np.uint8).reshape(5, 7, 3)
+    default = Path.home() / ".cache" / "medmlx" / "test-data" / "chest_xray.jpg"
+    xray = os.environ.get("MEDMLX_TEST_XRAY", str(default))
+    rgb = image_io.imread(xray)[100:132, 150:190]
+    if rgb.ndim == 2:
+        rgb = np.repeat(rgb[..., None], 3, axis=2)
     image_io.imsave(str(source), rgb, check_contrast=False)
 
     data, properties = read_images("NaturalImage2DIO", (source,))
@@ -129,7 +145,7 @@ def test_natural_rgb_reader_and_writer_match_upstream_layout(tmp_path: Path) -> 
     output = tmp_path / "prediction.png"
     sidecar = write_segmentation("NaturalImage2DIO", labels, output, properties, overwrite=False)
 
-    assert data.shape == (3, 1, 5, 7)
+    assert data.shape == (3, 1, 32, 40)
     assert np.array_equal(data, expected)
     assert np.array_equal(data[:, 0], rgb.transpose(2, 0, 1))
     assert properties == expected_properties == {"spacing": (999.0, 1.0, 1.0)}
@@ -140,11 +156,11 @@ def test_natural_rgb_reader_and_writer_match_upstream_layout(tmp_path: Path) -> 
 
 
 @pytest.mark.oracle
-def test_tiff_reader_writer_preserves_spacing_sidecar(tmp_path: Path) -> None:
+def test_tiff_reader_writer_preserves_spacing_sidecar(tmp_path: Path, real_ct: np.ndarray) -> None:
     """Preserve volumetric TIFF spacing through the JSON sidecar."""
     tifffile = import_module("tifffile")
     source = tmp_path / "case_0000.tif"
-    raw = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+    raw = real_ct[:5, :4, :3].transpose(2, 1, 0).astype(np.uint16)
     tifffile.imwrite(str(source), raw, photometric="minisblack")
     (tmp_path / "case.json").write_text('{"spacing": [2.5, 0.8, 0.7]}\n', encoding="utf-8")
 
@@ -180,7 +196,9 @@ def test_tiff_reader_writer_preserves_spacing_sidecar(tmp_path: Path) -> None:
 
 @pytest.mark.oracle
 @pytest.mark.parametrize("reorient", [False, True])
-def test_nibabel_reader_writer_matches_pinned_oracle(tmp_path: Path, reorient: bool) -> None:
+def test_nibabel_reader_writer_matches_pinned_oracle(
+    tmp_path: Path, reorient: bool, real_ct: np.ndarray,
+) -> None:
     """Compare Nibabel input and output behavior with the pinned source."""
     nibabel = import_module("nibabel")
     source_module = pytest.importorskip(
@@ -189,7 +207,7 @@ def test_nibabel_reader_writer_matches_pinned_oracle(tmp_path: Path, reorient: b
         exc_type=ModuleNotFoundError,
     )
     source = tmp_path / "case_0000.nii.gz"
-    raw = np.arange(4 * 5 * 6, dtype=np.int16).reshape(4, 5, 6)
+    raw = real_ct[:4, :5, :6]
     affine = np.asarray(
         [[-0.7, 0, 0, 11], [0, 0.8, 0, -3], [0, 0, 2.5, 7], [0, 0, 0, 1]],
         dtype=np.float64,

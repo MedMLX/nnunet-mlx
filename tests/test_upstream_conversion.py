@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import pytest
 from nnunet_reference.arrays import host_array
+from nnunet_reference.oracle.network import real_image_input
 
 if TYPE_CHECKING:
     from torch.nn import Module as TorchModule
@@ -81,7 +82,7 @@ def test_converted_folder_matches_upstream_network(
     assert result.folds == (0, 1)
     bundle = load_model_bundle(tmp_path / "mlx", configuration="3d_fullres", folds=[1])
     assert bundle.mirroring_axes == ()
-    values = np.random.default_rng(419).normal(size=(1, 1, 8, 8, 8)).astype(np.float32)
+    values = real_image_input((8, 8, 8), 1)[None]
     with torch.inference_mode():
         expected = model(torch.from_numpy(values)).numpy()
     mx, _ = import_mlx()

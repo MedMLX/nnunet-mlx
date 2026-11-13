@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 import numpy as np
 import pytest
+from nnunet_reference.oracle.network import real_image_input
 
 from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
@@ -37,7 +38,7 @@ def test_2d_volume_logits_match_ordered_slice_stack(
     """Keep slice placement and fold/half rounding equal to separate slice outputs."""
     from nnunet_mlx.prediction.inference import average_fold_logits
 
-    data = np.random.default_rng(741).normal(size=(1, *shape)).astype(np.float32)
+    data = real_image_input(shape, 1)
     models = tuple(PointwiseModel(scale) for scale in (1.0, 0.7)[:folds])
     expected = None
     for model in models:
@@ -90,7 +91,7 @@ def test_fp16_multitile_accumulation_matches_pinned_upstream() -> None:
             """Return source pointwise logits for the FP16 tile comparison."""
             return torch.cat((values, -values), dim=1)
 
-    values = np.random.default_rng(72).normal(size=(1, 7, 9, 11)).astype(np.float32)
+    values = real_image_input((7, 9, 11), 1)
     predictor = prediction.nnUNetPredictor(
         device=torch.device("cpu"), perform_everything_on_device=False, use_mirroring=False,
         allow_tqdm=False,
@@ -127,7 +128,7 @@ def test_compiled_model_preserves_multitile_logits(
     )
     # Match loaded inference models, including residual stage evaluation boundaries.
     model.eval()
-    values = np.random.default_rng(43).normal(size=(1, *shape)).astype(np.float32)
+    values = real_image_input(shape, 1)
     reference, compiled = (
         predict_logits(
             candidate, values, patch_size=(8, 8, 8), num_classes=3, mirroring_axes=(0, 1, 2),

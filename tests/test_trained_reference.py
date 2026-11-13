@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
+from nnunet_reference.oracle.network import real_image_input
 
 if TYPE_CHECKING:
     from torch.nn import Module as TorchModule
@@ -67,7 +68,7 @@ def test_trained_reference_can_disable_mirroring(
     source = tmp_path / "upstream"
     model = _write_upstream_model_folder(source, tiny_model_plans, tiny_model_dataset)
     image = tmp_path / "case_0000.nii.gz"
-    values = np.random.default_rng(403).normal(size=(8, 8, 8)).astype(np.float32)
+    values = real_image_input((8, 8, 8), 1)[0]
     nib.save(nib.Nifti1Image(values, np.eye(4)), image)
     actual, *_ = source_logits(
         source, [image], (0,), "checkpoint_final.pth", use_mirroring=False,

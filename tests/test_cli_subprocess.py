@@ -11,6 +11,7 @@ from typing import TypedDict
 import numpy as np
 import pytest
 from nnunet_reference.oracle.fixtures import raw_inference_fixture
+from nnunet_reference.oracle.network import real_image_input
 
 
 class InferenceFolder(TypedDict):
@@ -76,10 +77,10 @@ def _run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 def _write_raw_image(path: Path) -> None:
-    """Write a synthetic NIfTI image with known physical geometry."""
+    """Write an HCC-TACE CT crop with controlled physical geometry."""
     sitk = pytest.importorskip("SimpleITK")
     data = np.zeros((8, 8, 8), dtype=np.float32)
-    data[2:6, 2:6, 2:6] = 1
+    data[2:6, 2:6, 2:6] = real_image_input((4, 4, 4), 1)[0] + np.float32(1)
     image = sitk.GetImageFromArray(data)
     image.SetSpacing((1.0, 1.0, 1.0))
     image.SetOrigin((2.0, 3.0, 4.0))
@@ -152,9 +153,9 @@ def test_model_apply_postprocessing_subprocess_matches_pinned_nnunet_oracle(
     root = inference_model_folder["root"]
     input_folder = root / "postprocessing-input"
     input_folder.mkdir()
-    labels = np.zeros((6, 6, 6), dtype=np.uint8)
-    labels[0, 0, 0] = 1
-    labels[2:4, 2:4, 2:4] = 1
+    nib = pytest.importorskip("nibabel")
+    tumor_path = Path.home() / ".cache/medmlx/test-data/hcc_063_tumor.nii.gz"
+    labels = np.asarray(nib.load(tumor_path).dataobj, dtype=np.uint8)[90:155, 205:305, 50:80]
     image = sitk.GetImageFromArray(labels)
     sitk.WriteImage(image, str(input_folder / "case_0.nii.gz"))
 
@@ -184,4 +185,5 @@ def test_model_apply_postprocessing_subprocess_matches_pinned_nnunet_oracle(
 
     actual = sitk.GetArrayFromImage(sitk.ReadImage(str(output_folder / "case_0.nii.gz")))
     expected = upstream_pp_fn(labels.copy(), [1])
-    assert actual.tolist() == expected.tolist()
+    assert 0 < np.count_nonzero(expected) < np.count_nonzero(labels)
+    np.testing.assert_array_equal(actual, expected)

@@ -129,9 +129,9 @@ def test_fp16_prediction_restores_like_the_pinned_predictor(
         round(size * spacing[axis])
         for size, axis in zip((24, 28, 32), (2, 0, 1), strict=True)
     )
-    values = np.random.default_rng(5).normal(
-        scale=0.02, size=(3, *preprocessed_shape)
-    ).astype(np.float32)
+    from nnunet_reference.oracle.network import real_image_input
+
+    values = real_image_input(preprocessed_shape, 3)
 
     manager = plans_handler.PlansManager(plans)
     configuration = manager.get_configuration("3d_fullres")

@@ -6,6 +6,8 @@ from importlib import import_module
 
 import numpy as np
 import pytest
+from nnunet_reference.oracle.network import real_image_input
+from nnunet_reference.real_cases import anatomical_labels
 
 from nnunet_mlx.data.resampling import resample_segmentation
 from nnunet_mlx.plans import ResamplingContract
@@ -34,14 +36,11 @@ def _segmentation_contract(
 def test_explicit_segmentation_modes_match_batchgenerators(
     axis: int | None, order: int, mode: str,
 ) -> None:
-    # Thin, disconnected structures and three-label junctions exercise argmax
-    # scores below 0.5. The locked upstream library is independent of this port.
     """Compare explicit segmentation modes with the source implementation."""
     resize_segmentation = import_module("batchgenerators.augmentations.utils").resize_segmentation
-    segmentation = np.full((5, 6, 7), -1, dtype=np.int16)
-    segmentation[1:4, 1:5, 1:6] = 2
-    segmentation[:, 3, 3] = 7
-    segmentation[2, :, 4] = 11
+    segmentation = anatomical_labels()
+    # Retain the upstream ignore-label case in a real source grid.
+    segmentation[0, 0, 0] = -1
     target: list[int] = [8, 9, 10] if axis is None else list(segmentation.shape)
     spacing = [1.0, 1.0, 1.0]
     if axis is not None:
@@ -100,7 +99,7 @@ def test_float_resampling_matches_pinned_nnunet_bitwise(
     from nnunet_mlx.data.resampling import resample_probabilities_or_data
 
     source = import_module("nnunetv2.preprocessing.resampling.default_resampling")
-    data = np.random.default_rng(3).normal(size=(3, 7, 20, 22)).astype(dtype)
+    data = real_image_input((7, 20, 22), 3).astype(dtype)
     arguments = ((13, 31, 17), (5.0, 1.0, 1.0), (1.0, 0.7, 1.3))
     expected = source.resample_data_or_seg_to_shape(
         data, *arguments, is_seg=False, order=order, order_z=order_z,

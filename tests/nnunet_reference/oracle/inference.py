@@ -37,6 +37,7 @@ from nnunet_reference.oracle.metrics import (
 from nnunet_reference.oracle.network import (
     build_torch_plain_conv_unet,
     converted_candidate,
+    real_image_input,
 )
 
 
@@ -181,7 +182,7 @@ def run_sliding_window_parity(
     rtol: float = 1e-4,
     atol: float = 1e-4,
 ) -> ForwardParityResult:
-    """Compare seeded synthetic Torch CPU and MLX sliding-window logits.
+    """Compare Torch CPU and MLX sliding-window logits on a real image crop.
 
     The Torch helper uses explicit float32 accumulation rather than the source
     predictor's default float16 buffer. The pass gate is raw-logit allclose.
@@ -192,8 +193,7 @@ def run_sliding_window_parity(
     source = build_torch_plain_conv_unet(spec, seed=seed)
     candidate = PlainConvUNet(spec)
     load_converted_state(candidate, convert_state_dict(source.state_dict()))
-    rng = np.random.default_rng(seed)
-    values = rng.normal(size=(spec.input_channels, *spatial)).astype(np.float32)
+    values = real_image_input(spatial, spec.input_channels)
     expected = pinned_sliding_window_logits(
         source,
         values,
@@ -234,7 +234,7 @@ def run_fold_ensemble_parity(
     rtol: float = 1e-4,
     atol: float = 1e-4,
 ) -> ContractParityResult:
-    """Compare two independently seeded synthetic folds and their averaged logits.
+    """Compare two independently seeded folds and their averaged logits on a real image.
 
     Torch uses the float32 sliding-window helper; the gate is allclose on the
     mean logits, not segmentation accuracy or a pretrained-fold qualification.
@@ -246,8 +246,7 @@ def run_fold_ensemble_parity(
         build_torch_plain_conv_unet(spec, seed=network_seed) for network_seed in (seed, seed + 1)
     )
     candidates = [converted_candidate(spec, source) for source in sources]
-    rng = np.random.default_rng(seed + 2)
-    values = rng.normal(size=(spec.input_channels, *spatial)).astype(np.float32)
+    values = real_image_input(spatial, spec.input_channels)
     total: FloatArray | None = None
     for source in sources:
         logits = pinned_sliding_window_logits(
@@ -292,7 +291,7 @@ def run_configuration_ensemble_parity(
     seed: int = 34,
     step_fraction: float = 0.5,
 ) -> ContractParityResult:
-    """Compare two synthetic probability-file ensembles in a fresh ``work_dir``.
+    """Compare two probability-file ensembles on a CT crop in a fresh ``work_dir``.
 
     Creates configuration, expected and actual subdirectories and files. The
     gate requires allclose probabilities plus exact labels and image geometry.
@@ -309,8 +308,7 @@ def run_configuration_ensemble_parity(
     source_plans = plans_module.PlansManager(dict(plans_payload))
     configuration = source_plans.get_configuration("3d_fullres")
     labels = source_plans.get_label_manager(dict(dataset_json))
-    rng = np.random.default_rng(seed)
-    values = rng.normal(size=(spec.input_channels, *spatial)).astype(np.float32)
+    values = real_image_input(spatial, spec.input_channels)
     folders: list[Path] = []
     for index, network_seed in enumerate((seed, seed + 1)):
         source = build_torch_plain_conv_unet(spec, seed=network_seed)

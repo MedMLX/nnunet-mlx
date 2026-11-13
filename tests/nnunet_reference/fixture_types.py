@@ -20,7 +20,8 @@ class RunnerOption(TypedDict):
 class RunnerFixture(TypedDict):
     plans: dict[str, object]
     dataset_json: dict[str, object]
-    image_seed: int
+    image_seed: NotRequired[int]
+    image_source: NotRequired[str]
     weight_seeds: list[int]
     image_shape: list[int]
     image_affine: list[list[float]]

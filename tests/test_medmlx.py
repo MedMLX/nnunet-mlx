@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from medmlx_core.errors import InvalidInputError
 from nnunet_reference.fixture_types import RunnerFixture, UpstreamRecording
+from nnunet_reference.oracle.network import real_image_input
 from nnunet_reference.runner_network import build_network
 
 from nnunet_mlx import medmlx, named_models
@@ -136,9 +137,9 @@ def case(
     tiny_model_plans: dict[str, object],
     tiny_model_dataset: dict[str, object],
 ) -> tuple[Path, Path]:
-    """Create a synthetic model folder and input case for runner tests."""
+    """Create a seeded model folder and HCC-TACE input case for runner tests."""
     folder = _converted_folder(tmp_path, tiny_model_plans, tiny_model_dataset)
-    data = np.random.default_rng(31).normal(0, 1, (10, 9, 7)).astype(np.float32)
+    data = real_image_input((10, 9, 7), 1)[0]
     source = tmp_path / "case_0000.nii.gz"
     nib.save(nib.Nifti1Image(data, INPUT_AFFINE), source)
     return folder, source
@@ -287,7 +288,7 @@ def test_in_memory_probabilities_match_file_reader_grid_crop_and_geometry(
     plans["image_reader_writer"] = reader
     plans_path.write_text(json.dumps(plans))
     data = np.zeros((10, 9, 7), dtype=np.float32)
-    data[1:-1, 2:-1, 1:-1] = np.random.default_rng(167).normal(size=(8, 6, 5))
+    data[1:-1, 2:-1, 1:-1] = real_image_input((8, 6, 5), 1)[0]
     affine = np.array([[0.9, -0.8, 0, 12], [1.2, 0.6, 0, 8], [0, 0, 2, -3], [0, 0, 0, 1]])
     image = nib.Nifti1Image(data, affine)
     nib.save(image, source)
@@ -349,7 +350,7 @@ def test_file_and_nifti_labels_stream_without_a_full_logit_volume(
     """Keep cropped/transposed/padded labels equal to explicit host-logit export."""
     folder, source = case
     data = np.zeros((10, 9, 7), dtype=np.float32)
-    data[1:-1, 1:-1, 1:-1] = np.random.default_rng(97).normal(size=(8, 7, 5))
+    data[1:-1, 1:-1, 1:-1] = real_image_input((8, 7, 5), 1)[0]
     image = nib.Nifti1Image(data, INPUT_AFFINE)
     nib.save(image, source)
     bundle = load_model_bundle(folder, configuration="3d_fullres", folds=(0,))
@@ -405,7 +406,7 @@ def test_siam_runner_predicts_in_canonical_order_and_restores_the_input_grid(
     # Permuted and flipped axes (PIL), so the inverse reorientation is not the forward one.
     affine = np.array([[0.0, 0.0, -1.0, 4.0], [-1.0, 0.0, 0.0, 6.0],
                        [0.0, -1.0, 0.0, 2.0], [0, 0, 0, 1]])
-    data = np.random.default_rng(37).normal(0, 1, (10, 9, 7)).astype(np.float32)
+    data = real_image_input((10, 9, 7), 1)[0]
     source = tmp_path / "case_0000.nii.gz"
     nib.save(nib.Nifti1Image(data, affine), source)
     canonical = nib.as_closest_canonical(nib.load(source))
@@ -435,7 +436,7 @@ def test_siam_rejects_output_aliases_without_changing_input(
     """Keep the original scan byte-for-byte even when overwrite is requested."""
     source = tmp_path / "mask.nii.gz"
     affine = INPUT_AFFINE if voxel_size is None else np.eye(4)
-    data = np.random.default_rng(37).normal(0, 1, (10, 9, 7)).astype(np.float32)
+    data = real_image_input((10, 9, 7), 1)[0]
     nib.save(nib.Nifti1Image(data, affine), source)
     original = source.read_bytes()
     output = tmp_path if alias == "same-path" else tmp_path / "out"
@@ -466,7 +467,7 @@ def test_siam_replaces_only_the_output_directory_entry(
 ) -> None:
     """Honor overwrite without following output links or modifying their referents."""
     source = tmp_path / "scan.nii.gz"
-    data = np.random.default_rng(37).normal(0, 1, (10, 9, 7)).astype(np.float32)
+    data = real_image_input((10, 9, 7), 1)[0]
     nib.save(nib.Nifti1Image(data, INPUT_AFFINE), source)
     output = tmp_path / "out"
     output.mkdir()
