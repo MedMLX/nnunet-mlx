@@ -9,9 +9,9 @@ if TYPE_CHECKING:
 
 import numpy as np
 import pytest
+from nnunet_reference.arrays import host_array
 from nnunet_reference.oracle.network import real_image_input
 
-from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 from nnunet_mlx.prediction.sliding_window import nnunet_fp16_gaussian, predict_logits
 from nnunet_mlx.runtime import compile_inference_model, import_mlx
@@ -25,6 +25,38 @@ class PointwiseModel:
         """Return deterministic pointwise logits for tile tests."""
         mx, _ = import_mlx()
         return mx.concatenate((values * self.scale, -values * self.scale), axis=-1)
+
+
+@pytest.mark.metal
+@pytest.mark.parametrize("classes", [3, 30])
+def test_mirrored_running_sum_preserves_order_bitwise(classes: int) -> None:
+    """Materializing each running sum retains the original ordered FP32 arithmetic."""
+    from itertools import combinations
+
+    from nnunet_mlx.prediction.sliding_window import mirrored_prediction
+    from nnunet_mlx.runtime import InferenceRuntime
+
+    mx, nn = import_mlx()
+    mx.random.seed(715)
+    model = nn.Conv3d(1, classes, 3, padding=1)
+    shape = (1, 8, 7, 6, 1) if classes == 3 else (1, 64, 64, 72, 1)
+    tile = mx.array(np.random.default_rng(715).normal(size=shape).astype(np.float32))
+    outputs = [host_array(model(tile)).astype(np.float32, copy=False)]
+    for count in range(1, 4):
+        for selected in combinations((1, 2, 3), count):
+            output = model(mx.contiguous(mx.flip(tile, axis=selected)))
+            outputs.append(
+                host_array(mx.flip(output, axis=selected)).astype(np.float32, copy=False)
+            )
+    expected = outputs[0].copy()
+    for output in outputs[1:]:
+        expected += output
+    expected /= len(outputs)
+    actual = mirrored_prediction(
+        model, tile, (0, 1, 2), cast(InferenceRuntime, mx), num_classes=classes,
+    )
+    mx.eval(actual)
+    np.testing.assert_array_equal(host_array(actual), expected)
 
 
 @pytest.mark.metal
@@ -120,6 +152,8 @@ def test_compiled_model_preserves_multitile_logits(
     """Preserve logits exactly under compilation for qualified plain and residual models."""
     mx, _ = import_mlx()
     mx.random.seed(43)
+    from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
+
     topology = cast(PlainConvUNetSpec | ResidualEncoderUNetSpec, request.getfixturevalue(spec))
     model = (
         PlainConvUNet(topology)

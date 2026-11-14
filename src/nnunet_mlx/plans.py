@@ -39,6 +39,9 @@ class ResamplingContract:
     every pass. ``None`` represents an omitted plan field and retains the pinned
     threshold rule for higher-order separate-axis interpolation.
 
+    Parsing an omitted spline option preserves nnU-Net 2.8.1's defaults: order 3,
+    separate-axis order 0, force_separate_z=False and anisotropy threshold 3.
+
     ``resample_torch_fornnunet`` instead uses ``mode``/``aniso_axis_mode``;
     its spline orders are unused. Its omitted tie-break is ``nearest`` and its
     label scores use upstream's scale-1000 float16 quantization. Thread count and
@@ -79,12 +82,10 @@ class ResamplingContract:
             raise ContractError(f"unsupported nnU-Net resampling function {function_name!r}")
         kwargs = _mapping(configuration.get(f"{field}_kwargs"), name=f"{field}_kwargs")
         torch_resampling = function_name == "resample_torch_fornnunet"
-        is_seg = _boolean(
-            kwargs.get("is_seg", False if torch_resampling else None), name=f"{field}.is_seg"
-        )
+        is_seg = _boolean(kwargs.get("is_seg", False), name=f"{field}.is_seg")
         if is_seg is not expected_is_seg:
             raise ContractError(f"{field}.is_seg does not match its runtime role")
-        force = kwargs.get("force_separate_z")
+        force = kwargs.get("force_separate_z", None if torch_resampling else False)
         if force is not None and not isinstance(force, bool):
             raise ContractError(f"{field}.force_separate_z must be boolean or null")
         seg_tiebreak: SegmentationTieBreak | None = None
@@ -95,6 +96,10 @@ class ResamplingContract:
                     f"{field}.seg_tiebreak must be 'nearest', 'lowest', or 'highest'"
                 )
             seg_tiebreak = value
+        threshold = parse_number(kwargs.get("separate_z_anisotropy_threshold", 3.0),
+                                 name=f"{field}.separate_z_anisotropy_threshold")
+        if threshold <= 0:
+            raise ContractError(f"{field}.separate_z_anisotropy_threshold must be positive")
         if torch_resampling:
             supported = {
                 "is_seg", "force_separate_z", "seg_tiebreak", "mode", "aniso_axis_mode",
@@ -110,10 +115,6 @@ class ResamplingContract:
                      name=f"{field}.memefficient_seg_resampling")
             if kwargs.get("device", "cpu") != "cpu":
                 raise ContractError(f"{field}.device supports only 'cpu' host resampling")
-            threshold = parse_number(kwargs.get("separate_z_anisotropy_threshold", 3.0),
-                                     name=f"{field}.separate_z_anisotropy_threshold")
-            if threshold <= 0:
-                raise ContractError(f"{field}.separate_z_anisotropy_threshold must be positive")
             return cls(
                 function_name=function_name, order=1, order_z=0, force_separate_z=force,
                 seg_tiebreak=seg_tiebreak or "nearest",
@@ -123,12 +124,22 @@ class ResamplingContract:
                 ),
                 separate_z_anisotropy_threshold=threshold,
             )
+        supported = {"is_seg", "order", "order_z", "force_separate_z", "seg_tiebreak",
+                     "separate_z_anisotropy_threshold"}
+        unknown = kwargs.keys() - supported
+        if unknown:
+            raise ContractError(f"{field}: unsupported spline kwargs: {', '.join(sorted(unknown))}")
+        order = _nonnegative_integer(kwargs.get("order", 3), name=f"{field}.order")
+        order_z = _nonnegative_integer(kwargs.get("order_z", 0), name=f"{field}.order_z")
+        if order > 5 or order_z > 5:
+            raise ContractError(f"{field}: spline orders must be in [0, 5]")
         return cls(
             function_name=function_name,
-            order=_nonnegative_integer(kwargs.get("order"), name=f"{field}.order"),
-            order_z=_nonnegative_integer(kwargs.get("order_z"), name=f"{field}.order_z"),
+            order=order,
+            order_z=order_z,
             force_separate_z=force,
             seg_tiebreak=seg_tiebreak,
+            separate_z_anisotropy_threshold=threshold,
         )
 
 

@@ -94,9 +94,8 @@ def merge_probability_files(
     and non-object NumPy metadata without executable globals. Inputs must share the
     same reader-space grid and agree on metadata fields present in multiple sidecars.
     The loader does not establish sidecar provenance. The geometry check compares
-    original-grid metadata, not every possible reader-space orientation; callers must
-    ensure the array grids match. Region inputs must record matching labels and region
-    order; class
+    original-grid and active reader-grid metadata. Region inputs must record matching
+    labels and region order; class
     inputs can omit label metadata, but recorded labels must match the requested
     output channel count. Where a completion receipt exists, files must still match it.
     The label map is decoded from the averaged probabilities and written with
@@ -107,13 +106,19 @@ def merge_probability_files(
     if not paths:
         raise ContractError("probability merging requires at least one file")
     properties = tuple(_probability_properties(path) for path in paths)
-    for path in paths:
-        _validate_probability_receipt(path)
+    for path, item in zip(paths, properties, strict=True):
+        _validate_probability_receipt(path, item)
     validate_ensemble_properties(properties)
     _validate_requested_semantics(properties, semantics)
     probabilities = average_probability_files(paths, semantics=semantics)
     if probabilities.ndim not in (3, 4) or probabilities.shape[0] != semantics.output_channels:
         raise ContractError("ensemble probabilities do not match dataset output channels")
+    for item in properties:
+        if "probability_grid" in item:
+            grid = parse_mapping(item["probability_grid"], name="probability_grid")
+            if (grid.get("shape") != list(probabilities.shape[1:])
+                    or grid.get("axis_order") != "ZYX"):
+                raise ContractError("ensemble probability grid does not match the saved array")
     segmentation = probabilities_to_segmentation(
         probabilities, regions_class_order=semantics.regions_class_order
     )
@@ -127,6 +132,7 @@ def merge_probability_files(
         file_ending=file_ending,
         image_reader_writer=image_reader_writer,
         overwrite=overwrite,
+        input_files=(*paths, *(path.with_suffix(".pkl") for path in paths)),
     )
 
 
@@ -226,7 +232,7 @@ def _probability_properties(probabilities_file: Path) -> dict[str, object]:
 
 
 def validate_ensemble_properties(properties: Sequence[dict[str, object]]) -> None:
-    """Require equal original-grid geometry and compatible case/label metadata.
+    """Require equal original and reader grids and compatible case/label metadata.
 
     Geometry (SimpleITK spacing/origin/direction, Nibabel original affine, or plain
     spacing) must agree to an absolute tolerance of 1e-6; the identifier, label and
@@ -257,10 +263,20 @@ def validate_ensemble_properties(properties: Sequence[dict[str, object]]) -> Non
             raise ContractError(f"ensemble inputs have incompatible {key}")
 
 
-def _validate_probability_receipt(probabilities_file: Path) -> None:
+def _validate_probability_receipt(
+    probabilities_file: Path, properties: Mapping[str, object],
+) -> None:
     """Reject probability files that their completion receipt no longer owns."""
 
-    receipt_path = completion_receipt_path(probabilities_file.with_suffix(""))
+    name = properties.get("completion_receipt")
+    if name is None:
+        receipt_path = completion_receipt_path(probabilities_file.with_suffix(""))
+    else:
+        if not isinstance(name, str) or Path(name).name != name:
+            raise ContractError("probability completion receipt must be a file name")
+        receipt_path = probabilities_file.parent / name
+        if not receipt_path.is_file():
+            raise ContractError(f"probability completion receipt is unavailable: {receipt_path}")
     if not receipt_path.is_file():
         # External or legacy probability files carry no completion receipt.
         return
@@ -362,10 +378,17 @@ def _original_grid(properties: dict[str, object]) -> dict[str, npt.NDArray[np.fl
         fields = {key: raw.get(key) for key in ("spacing", "origin", "direction")}
     elif "nibabel_stuff" in properties:
         raw = parse_mapping(properties["nibabel_stuff"], name="nibabel_stuff")
-        fields = {"original_affine": raw.get("original_affine")}
+        fields = {"original_affine": raw.get("original_affine"),
+                  "reader_affine": raw.get("reoriented_affine", raw.get("original_affine"))}
     else:
         fields = {"spacing": properties.get("spacing")}
     result = {key: np.asarray(value, dtype=np.float64) for key, value in fields.items()}
     if any(value.ndim == 0 or not np.isfinite(value).all() for value in result.values()):
         raise ContractError("ensemble original grid metadata must be finite arrays")
+    if "nibabel_stuff" in properties and "probability_grid" in properties:
+        grid = parse_mapping(properties["probability_grid"], name="probability_grid")
+        affine = np.asarray(grid.get("affine"), dtype=np.float64)
+        expected = result["reader_affine"][:, [2, 1, 0, 3]]
+        if affine.shape != (4, 4) or not np.allclose(affine, expected, rtol=0, atol=1e-6):
+            raise ContractError("ensemble probability affine differs from its reader grid")
     return result

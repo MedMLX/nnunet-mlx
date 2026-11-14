@@ -17,6 +17,8 @@ class RunDetails(TypedDict):
     mirroring_axes: list[int]
     step_fraction: float
     accumulation: str
+    decoding: str
+    save_probabilities: bool
     backend: str
     preprocessed_shape: list[int]
     metrics: dict[str, object]

@@ -152,6 +152,14 @@ def runtime_info() -> RuntimeInfo:
 def compile_inference_model[I, O](model: Callable[[I], O]) -> Callable[[I], O]:
     """Compile a fixed-state inference model for the selected MLX accelerator."""
 
+    from nnunet_mlx.model.residency import CheckpointBackedFoldModel
+
+    if isinstance(model, CheckpointBackedFoldModel):
+        raise ContractError(
+            "compile_models=True is not supported for checkpoint-backed multi-fold models; "
+            "use compile_models=False so fold weight changes are applied on every switch"
+        )
+
     if not inference_compilation_eligible(model):
         raise ContractError(f"inference compilation is not qualified for {type(model).__name__}")
     mx, _ = import_mlx()

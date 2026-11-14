@@ -13,6 +13,7 @@ from medmlx_core.errors import InvalidInputError
 from medmlx_core.weights import weights_dir
 
 from nnunet_mlx import medmlx
+from nnunet_mlx.errors import ContractError
 from nnunet_mlx.medmlx_types import RunResult
 from nnunet_mlx.prediction.source import SIAM_SOURCE_PROFILE
 
@@ -239,11 +240,19 @@ def siam(
             true spacing), towards adult size. The mask keeps the input geometry.
         fold: Optional single fold; by default every fold in the model folder is used.
     """
-    import os
     from importlib import import_module
     from tempfile import TemporaryDirectory
 
     import numpy as np
+
+    from nnunet_mlx.prediction.export import (
+        ExportedFiles,
+        RestoredPrediction,
+        completion_receipt_path,
+        export_prediction,
+        publish_prediction,
+        require_prediction_destination,
+    )
 
     if voxel_size is not None and not (
         isinstance(cast(object, voxel_size), int | float)
@@ -257,13 +266,14 @@ def siam(
     source_path = Path(image_path).expanduser()
     output = Path(output_dir).expanduser()
     target = output / "mask.nii.gz"
-    # The generic runner sees only the staged canonical scan on the reoriented path.
-    if target.resolve() == source_path.resolve() or (
-        target.exists() and target.samefile(source_path)
-    ):
-        raise InvalidInputError("SIAM output must differ from the input image")
-    if (target.exists() or target.is_symlink()) and not overwrite:
-        raise InvalidInputError(f"SIAM output already exists: {target}; pass overwrite=True")
+    generation = ExportedFiles(target, probabilities=output / medmlx.PROBABILITIES,
+                              properties=output / medmlx.PROBABILITY_PROPERTIES)
+    try:
+        require_prediction_destination(generation, overwrite=overwrite,
+                                       input_files=(source_path,),
+                                       extra_paths=(completion_receipt_path(output / "mask"),))
+    except ContractError as error:
+        raise InvalidInputError(str(error)) from error
     source = nibabel.load(str(source_path))
     if int(source.ndim) != 3:
         raise InvalidInputError(f"SIAM takes one 3-D volume, got shape {source.shape}")
@@ -300,20 +310,24 @@ def siam(
         restored = orientations.apply_orientation(
             labels, orientations.ornt_transform(ras, ornt)
         )
-        # NiBabel follows links when saving; publish a completed private file instead.
-        staged_mask = Path(staging) / "mask.nii.gz"
-        nibabel.save(nibabel.Nifti1Image(np.ascontiguousarray(restored), source_affine),
-                     str(staged_mask))
-        if overwrite:
-            os.replace(staged_mask, target)
-        else:
-            # A destination created during prediction must not be overwritten either.
-            try:
-                os.link(staged_mask, target)
-            except FileExistsError as error:
-                raise InvalidInputError(
-                    f"SIAM output already exists: {target}; pass overwrite=True"
-                ) from error
+        # Validate the restored source grid before the shared final publication.
+        identity = {"inputs": [str(source_path)], "voxel_size": voxel_size,
+                    "details": result["details"]}
+        staged_files = export_prediction(
+            RestoredPrediction(np.ascontiguousarray(restored.transpose(2, 1, 0),
+                                                     dtype=np.uint16), None),
+            {"nibabel_stuff": {"original_affine": source_affine},
+             "spacing": tuple(float(v) for v in source.header.get_zooms()[::-1])},
+            Path(staging) / "restored",
+            file_ending=".nii.gz", image_reader_writer="NibabelIO", overwrite=False,
+            completion_identity=identity,
+        )
+        try:
+            publish_prediction(staged_files, ExportedFiles(target), generation=generation,
+                               output_prefix=output / "mask", overwrite=overwrite,
+                               input_files=(source_path,), completion_identity=identity)
+        except ContractError as error:
+            raise InvalidInputError(str(error)) from error
     result["outputs"]["mask"] = target.resolve().as_posix()
     return result
 

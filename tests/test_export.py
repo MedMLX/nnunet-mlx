@@ -92,10 +92,13 @@ class _ScaledModel:
 @pytest.mark.metal
 @pytest.mark.parametrize("save_probabilities", [False, True])
 @pytest.mark.parametrize(
-    "spacing", [(1.5, 0.8, 0.7), (4.0, 0.8, 0.7)], ids=["joint", "separate-z"]
+    ("spacing", "threshold"),
+    [((1.5, 0.8, 0.7), 3.0), ((4.0, 0.8, 0.7), 3.0),
+     ((4.0, 0.8, 0.7), 10.0), ((1.5, 0.8, 0.7), 1.5)],
+    ids=["joint", "separate-z", "threshold-joint", "threshold-separate-z"],
 )
 def test_fp16_prediction_restores_like_the_pinned_predictor(
-    spacing: tuple[float, float, float], save_probabilities: bool,
+    spacing: tuple[float, float, float], threshold: float, save_probabilities: bool,
 ) -> None:
     """Average two folds in float16 and restore upstream's labels on host and Metal.
 
@@ -117,6 +120,11 @@ def test_fp16_prediction_restores_like_the_pinned_predictor(
     )
 
     plans, dataset = raw_inference_fixture()
+    configurations = cast(dict[str, dict[str, object]], plans["configurations"])
+    probability_options = cast(
+        dict[str, object], configurations["base"]["resampling_fn_probabilities_kwargs"],
+    )
+    probability_options["separate_z_anisotropy_threshold"] = threshold
     dataset["labels"] = {"background": 0, "a": 1, "b": 2}
     properties: dict[str, object] = {
         "spacing": spacing,

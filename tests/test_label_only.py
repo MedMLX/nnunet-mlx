@@ -67,7 +67,7 @@ def test_streamed_labels_decline_cases_requiring_score_restoration(
     )
     crop_shape = [6, 4, 5] if restriction == "resample" else [3, 4, 5]
     result = predict_same_grid_segmentation(
-        runner, real_image_input((3, 4, 5), 1),
+        runner, np.ones((1, 3, 4, 5), dtype=np.float32),
         {
             "shape_after_cropping_and_before_resampling": crop_shape,
             "shape_before_cropping": crop_shape,

@@ -140,3 +140,70 @@ def test_legacy_plans_match_upstream_reconstruction(
     upgraded = upgrade_legacy_plans({"configurations": {"legacy": legacy}})
     configurations = cast(dict[str, object], upgraded["configurations"])
     assert configurations["legacy"] == expected
+
+
+@pytest.mark.metal
+def test_cache_tracks_metadata_and_repairs_missing_payloads(
+    tmp_path: Path, tiny_model_plans: dict[str, object], tiny_model_dataset: dict[str, object],
+) -> None:
+    """Reuse unchanged conversions, rebuild changed plans/dataset and damaged payloads."""
+    from nnunet_mlx.plans import read_json_object
+    from nnunet_mlx.storage.upstream import cached_conversion
+
+    source = tmp_path / "Dataset999" / "trained"
+    source.parent.mkdir()
+    _write_trained_folder(
+        source, _tiny_plans(tiny_model_plans), tiny_model_dataset,
+        trainer="nnUNetTrainer", mirroring_axes=None,
+    )
+    cache = tmp_path / "cache"
+    converted = cached_conversion(source, folds=None, cache=cache)
+    sentinel = converted / "reuse"
+    sentinel.touch()
+    assert cached_conversion(source, folds=None, cache=cache) == converted
+    assert sentinel.exists()
+    for name in ("plans.json", "dataset.json"):
+        payload = read_json_object(source / name)
+        if name == "plans.json":
+            configurations = cast(dict[str, dict[str, object]], payload["configurations"])
+            configurations["base"]["spacing"] = [2, 2, 2]
+        else:
+            payload["labels"] = {"background": 0, "updated_label": 1}
+        (source / name).write_text(json.dumps(payload))
+        cached_conversion(source, folds=None, cache=cache)
+        assert read_json_object(converted / name) == payload
+        assert not sentinel.exists()
+    for name in ("fold_0/checkpoint_final/weights.safetensors",
+                 "fold_1/checkpoint_final/state.json", "plans.json", "dataset.json"):
+        payload = converted / name
+        payload.unlink()
+        cached_conversion(source, folds=None, cache=cache)
+        assert payload.is_file()
+
+
+@pytest.mark.metal
+def test_predict_cli_selects_sole_fold_all(
+    tmp_path: Path, tiny_model_plans: dict[str, object], tiny_model_dataset: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Discover fold_all through conversion and model loading without an explicit -f."""
+    import shutil
+    from importlib import import_module
+
+    from nnunet_mlx.cli import main
+
+    source = tmp_path / "trained"
+    _write_trained_folder(source, _tiny_plans(tiny_model_plans), tiny_model_dataset,
+                          trainer="nnUNetTrainer", mirroring_axes=None)
+    (source / "fold_0").rename(source / "fold_all")
+    shutil.rmtree(source / "fold_1")
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    nib = import_module("nibabel")
+    nib.save(nib.Nifti1Image(np.ones((8, 8, 8), dtype=np.float32), np.eye(4)),
+             inputs / "case_0000.nii.gz")
+    monkeypatch.setenv("NNUNET_MLX_CACHE", str(tmp_path / "cache"))
+    assert main(["predict", "-m", str(source), "-i", str(inputs), "-o", str(tmp_path / "out"),
+                 "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["predictions"][0]["prediction"]["folds"] == ["all"]

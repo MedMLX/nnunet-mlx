@@ -119,6 +119,7 @@ markers = [
   "host: runs without MLX, accelerator hardware, or the numerical oracle",
   "metal: requires MLX on Metal on an Apple-silicon Mac",
   "oracle: requires the pinned Torch/dynamic-network-architectures oracle",
+  "qualification: requires sourced images or locally recorded upstream outputs",
 ]
 
 [tool.ruff]

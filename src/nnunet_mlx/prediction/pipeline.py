@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import asdict, dataclass
+from itertools import islice
 from math import prod
 from multiprocessing import get_context
 from pathlib import Path
@@ -14,12 +15,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from nnunet_mlx.contracts import parse_integer
+from nnunet_mlx.contracts import parse_integer, parse_string
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.model.folder import ModelBundle
 from nnunet_mlx.prediction.export import (
     ExportedFiles,
     RestoredPrediction,
+    can_restore_device_segmentation,
     completion_receipt_path,
     export_prediction,
     predict_same_grid_segmentation,
@@ -46,6 +48,8 @@ from nnunet_mlx.runtime import compile_inference_model
 if TYPE_CHECKING:
     from nibabel.nifti1 import Nifti1Image
 
+    from nnunet_mlx.data.labels import LabelSemantics
+    from nnunet_mlx.plans import PlansContract
     from nnunet_mlx.prediction.nifti import NiftiPrediction
 
 
@@ -86,6 +90,8 @@ class RawPredictionResult:
     folds: tuple[int | str, ...]
     preprocessed_shape: tuple[int, ...]
     metrics: PredictionMetrics | None = None
+    accumulation: str = "float32"
+    decoding: str = "logit-argmax"
 
     def to_payload(self) -> dict[str, object]:
         """Serialize output files, fold selection and preprocessing details."""
@@ -94,6 +100,8 @@ class RawPredictionResult:
             "folds": list(self.folds),
             "preprocessed_shape": list(self.preprocessed_shape),
             "metrics": None if self.metrics is None else self.metrics.to_payload(),
+            "accumulation": self.accumulation,
+            "decoding": self.decoding,
         }
 
 
@@ -153,6 +161,13 @@ class _PredictionCasePlan:
     identity: dict[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class _DeferredPreparation:
+    """Size notice for a case that must run after queued payloads have drained."""
+
+    required_bytes: int
+
+
 class ModelFolderPredictor:
     """Predict raw cases from an MLX-native model folder.
 
@@ -162,7 +177,7 @@ class ModelFolderPredictor:
         compile_models: Compile models inside the supported compilation envelope
             (native arithmetic only). Off by default: the fused native kernels make
             compiled forwards no faster. Ordered ``torch-order-fp32`` arithmetic
-            rejects ``True``.
+            and checkpoint-backed multi-fold models reject ``True``.
         accumulation: ``"float32"`` or ``"nnunet-fp16"`` window accumulation; see
             ``predict_logits``.
 
@@ -268,7 +283,8 @@ class ModelFolderPredictor:
 
         Raises:
             ContractError: If outputs or ``logits_file`` already exist without
-                ``overwrite``, ``logits_file`` overlaps an input or output, or any
+                ``overwrite``, any output overlaps an input, logits overlap a
+                prediction output, or any
                 input violates the model contract.
         """
         started = perf_counter()
@@ -276,9 +292,14 @@ class ModelFolderPredictor:
             output_prefix,
             file_ending=self.bundle.file_ending,
             image_reader_writer=self.bundle.image_reader_writer,
-            save_probabilities=save_probabilities,
+            save_probabilities=True,
         )
-        require_prediction_destination(expected, overwrite=overwrite)
+        inputs = (*image_files,
+                  *((previous_stage_file,) if previous_stage_file is not None else ()))
+        require_prediction_destination(
+            expected, overwrite=overwrite, input_files=inputs,
+            extra_paths=(completion_receipt_path(output_prefix),),
+        )
         logits_path = None if logits_file is None else Path(logits_file)
         if logits_path is not None:
             forbidden = {Path(path).resolve() for path in image_files}
@@ -293,7 +314,10 @@ class ModelFolderPredictor:
                     forbidden.add(destination.resolve())
             if previous_stage_file is not None:
                 forbidden.add(Path(previous_stage_file).resolve())
-            if logits_path.resolve() in forbidden:
+            if logits_path.resolve() in forbidden or any(
+                logits_path.exists() and Path(path).exists() and logits_path.samefile(path)
+                for path in inputs
+            ):
                 raise ContractError(
                     "logits destination overlaps a prediction input or segmentation"
                 )
@@ -358,6 +382,8 @@ class ModelFolderPredictor:
             folds=self.bundle.folds,
             preprocessed_shape=tuple(int(value) for value in prepared.data.shape),
             metrics=metrics,
+            accumulation=self.predictor.accumulation,
+            decoding=self._decoding(save_probabilities),
         )
 
     def predict_folder(
@@ -455,10 +481,18 @@ class ModelFolderPredictor:
             identity = self._prediction_identity(
                 case.image_files, previous_file, save_probabilities
             )
+            generation = prediction_output_files(
+                prefix, file_ending=self.bundle.file_ending,
+                image_reader_writer=self.bundle.image_reader_writer, save_probabilities=True,
+            )
+            inputs = (*case.image_files, *((previous_file,) if previous_file is not None else ()))
+            require_prediction_destination(generation, overwrite=True, input_files=inputs,
+                                           extra_paths=(completion_receipt_path(prefix),))
             if continue_existing and prediction_is_complete(prefix, expected, identity):
                 skipped.append(case.identifier)
                 continue
-            require_prediction_destination(expected, overwrite=overwrite)
+            require_prediction_destination(generation, overwrite=overwrite,
+                                           extra_paths=(completion_receipt_path(prefix),))
             plans.append(_PredictionCasePlan(case, prefix, previous_file, identity))
         return tuple(plans), tuple(skipped)
 
@@ -506,8 +540,10 @@ class ModelFolderPredictor:
 
         Inference runs sequentially in this process (one accelerator). Preprocessing
         runs ahead in worker processes and exports lag behind, bounded to
-        ``export_processes`` pending futures. ``max_inflight_bytes`` is split evenly
-        across preparation and export slots to give a per-case byte allowance.
+        ``export_processes`` pending futures. Small payloads share the budget across
+        slots. Larger preparations run alone after draining queues; larger exports
+        write inline. The budget bounds retained payloads, not preprocessing or
+        restoration scratch space in active workers.
         """
         # Reserve payload space for queued preparation, the active input, and exports.
         preparation_slots = preprocessing_processes + 1
@@ -519,9 +555,23 @@ class ModelFolderPredictor:
         pending_exports: deque[
             tuple[_PredictionCasePlan, tuple[int, ...], Future[ExportedFiles]]
         ] = deque()
+
+        def finish_exports() -> None:
+            """Release pending export payloads before a case consumes the full budget."""
+            while pending_exports:
+                predictions.append(_completed_export(pending_exports.popleft(), self.bundle.folds))
+
         for plan, prepared in self._prepared_cases(
             plans, preprocess_executor, preprocessing_processes, allowance
         ):
+            if isinstance(prepared, _DeferredPreparation):
+                finish_exports()
+                if prepared.required_bytes > max_inflight_bytes:
+                    raise ContractError(
+                        "preprocessed case exceeds max-inflight-bytes; increase the total budget"
+                    )
+                prepared = self._prepare_input(plan.case.image_files, plan.previous_stage_file,
+                                               max_output_bytes=max_inflight_bytes)
             logits, restored, _ = self._infer(
                 prepared, save_probabilities=save_probabilities, host_logits=False
             )
@@ -554,14 +604,16 @@ class ModelFolderPredictor:
                         overwrite=overwrite,
                         completion_identity=plan.identity,
                         max_output_bytes=allowance,
+                        finish_exports=finish_exports,
                     ),
                 )
             )
             del prepared, logits, restored
             if len(pending_exports) > export_processes:
                 predictions.append(_completed_export(pending_exports.popleft(), self.bundle.folds))
-        while pending_exports:
-            predictions.append(_completed_export(pending_exports.popleft(), self.bundle.folds))
+        finish_exports()
+        order = {plan.case.identifier: index for index, plan in enumerate(plans)}
+        predictions.sort(key=lambda result: order[result.identifier])
         return predictions
 
     def _prepared_cases(
@@ -570,36 +622,39 @@ class ModelFolderPredictor:
         executor: ProcessPoolExecutor | None,
         processes: int,
         allowance: int,
-    ) -> Iterator[tuple[_PredictionCasePlan, PreparedPredictionInput]]:
-        """Yield ``(plan, prepared)`` in order, keeping ``processes`` preparations queued ahead."""
+    ) -> Iterator[tuple[_PredictionCasePlan, PreparedPredictionInput | _DeferredPreparation]]:
+        """Drain small preparations before retrying oversized cases without a queue.
+
+        Workers return only a size notice for oversized results, avoiding their
+        serialization into a slot they do not fit. Such a case is prepared again
+        after the batch drains. This extra preprocessing is limited to large cases.
+        """
         if executor is None:
             for plan in plans:
-                yield (
-                    plan,
-                    self._prepare_input(
-                        plan.case.image_files,
-                        plan.previous_stage_file,
-                        max_output_bytes=allowance,
-                    ),
-                )
+                prepared = self._prepare_input(plan.case.image_files, plan.previous_stage_file)
+                if prepared.data.nbytes > allowance:
+                    size = prepared.data.nbytes
+                    del prepared
+                    yield plan, _DeferredPreparation(size)
+                else:
+                    yield plan, prepared
+                    del prepared
             return
-        pending: deque[tuple[_PredictionCasePlan, Future[PreparedPredictionInput]]] = deque()
         iterator = iter(plans)
-        for _ in range(processes):
-            plan = next(iterator, None)
-            if plan is None:
-                break
-            pending.append((plan, self._submit_preparation(executor, plan, allowance)))
-        while pending:
-            plan, future = pending.popleft()
-            prepared = future.result()
-            next_plan = next(iterator, None)
-            if next_plan is not None:
-                pending.append(
-                    (next_plan, self._submit_preparation(executor, next_plan, allowance))
-                )
-            yield plan, prepared
-            del prepared, future
+        while batch := tuple(islice(iterator, processes)):
+            pending = deque(
+                (plan, self._submit_preparation(executor, plan, allowance)) for plan in batch
+            )
+            deferred: list[tuple[_PredictionCasePlan, _DeferredPreparation]] = []
+            while pending:
+                plan, future = pending.popleft()
+                prepared = future.result()
+                if isinstance(prepared, _DeferredPreparation):
+                    deferred.append((plan, prepared))
+                else:
+                    yield plan, prepared
+                del prepared, future
+            yield from deferred
 
     def _prepare_input(
         self,
@@ -624,10 +679,10 @@ class ModelFolderPredictor:
         executor: ProcessPoolExecutor,
         plan: _PredictionCasePlan,
         max_output_bytes: int,
-    ) -> Future[PreparedPredictionInput]:
+    ) -> Future[PreparedPredictionInput | _DeferredPreparation]:
         """Submit one case preprocessing task to the process pool."""
         return executor.submit(
-            prepare_prediction_input,
+            _prepare_worker_input,
             plan.case.image_files,
             image_reader_writer=self.bundle.image_reader_writer,
             image_channels=self.bundle.image_channels,
@@ -651,13 +706,18 @@ class ModelFolderPredictor:
         fold streams labels without a full logit volume. Cases the fused
         restoration rejects receive the same logits on the host instead. The
         last value is the seconds spent in Metal restoration after fold
-        inference; streamed labels count as inference.
+        inference; streamed labels count as inference. Geometry and policy checks
+        select bounded host slabs upfront for unsupported device restoration.
         """
         if (
             host_logits
             or save_probabilities
             or self.bundle.semantics.has_regions
             or len(self.predictor.patch_size) != 3
+            or not can_restore_device_segmentation(
+                prepared.data.shape[1:], prepared.properties, self.bundle.plans,
+                self.bundle.semantics,
+            )
         ):
             return self.predictor.predict_logits_from_preprocessed_data(prepared.data), None, 0.0
         streamed = predict_same_grid_segmentation(
@@ -729,10 +789,12 @@ class ModelFolderPredictor:
         overwrite: bool,
         completion_identity: Mapping[str, object],
         max_output_bytes: int,
+        finish_exports: Callable[[], None],
     ) -> Future[ExportedFiles]:
         """Restore labels in this process, then queue only the host export in a worker.
 
-        The restored case must fit ``max_output_bytes`` so queued results stay bounded.
+        Oversized results drain queued exports and write inline instead of being
+        copied into a worker slot they do not fit.
         """
         if restored is None:
             if logits is None:
@@ -748,9 +810,14 @@ class ModelFolderPredictor:
         if restored.probabilities is not None:
             output_bytes += restored.probabilities.nbytes
         if output_bytes > max_output_bytes:
-            raise ContractError(
-                "restored case exceeds worker byte allowance; increase max-inflight-bytes"
-            )
+            finish_exports()
+            completed: Future[ExportedFiles] = Future()
+            completed.set_result(export_prediction(
+                restored, prepared.properties, output_prefix, file_ending=self.bundle.file_ending,
+                image_reader_writer=self.bundle.image_reader_writer, overwrite=overwrite,
+                completion_identity=completion_identity,
+            ))
+            return completed
         return executor.submit(
             export_prediction,
             restored,
@@ -802,10 +869,17 @@ class ModelFolderPredictor:
             "arithmetic": self.bundle.arithmetic,
             "compiled": self.compilation_enabled,
             "save_probabilities": save_probabilities,
+            "decoding": self._decoding(save_probabilities),
             "step_fraction": self.predictor.step_fraction,
             "mirroring_axes": list(self.predictor.mirroring_axes),
             "accumulation": self.predictor.accumulation,
         }
+
+    def _decoding(self, save_probabilities: bool) -> str:
+        """Name the nonlinearity/decision path that produced the returned labels."""
+        if self.bundle.semantics.has_regions:
+            return "sigmoid-region-threshold"
+        return "softmax-argmax" if save_probabilities else "logit-argmax"
 
 
 def _process_pool(processes: int) -> ProcessPoolExecutor | None:
@@ -826,6 +900,21 @@ def _shutdown_pool(executor: ProcessPoolExecutor | None) -> None:
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def _prepare_worker_input(
+    image_files: Sequence[str | Path], *, image_reader_writer: str, image_channels: int,
+    plans: PlansContract, semantics: LabelSemantics, previous_stage_file: str | Path | None,
+    max_output_bytes: int,
+) -> PreparedPredictionInput | _DeferredPreparation:
+    """Return only a size notice when a prepared payload exceeds its reserved slot."""
+    prepared = prepare_prediction_input(
+        image_files, image_reader_writer=image_reader_writer, image_channels=image_channels,
+        plans=plans, semantics=semantics, previous_stage_file=previous_stage_file,
+    )
+    if prepared.data.nbytes > max_output_bytes:
+        return _DeferredPreparation(prepared.data.nbytes)
+    return prepared
+
+
 def _case_result(
     plan: _PredictionCasePlan,
     preprocessed_shape: tuple[int, ...],
@@ -839,6 +928,8 @@ def _case_result(
             files=files,
             folds=folds,
             preprocessed_shape=preprocessed_shape,
+            accumulation=parse_string(plan.identity["accumulation"], name="accumulation"),
+            decoding=parse_string(plan.identity["decoding"], name="decoding"),
         ),
     )
 

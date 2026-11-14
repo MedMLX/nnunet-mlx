@@ -101,7 +101,7 @@ def preprocess_raw_case(
     )
     result_properties["bbox_used_for_cropping"] = [list(pair) for pair in bounding_box]
     result_properties["shape_after_cropping_and_before_resampling"] = tuple(cropped.shape[1:])
-    normalized = _normalize(cropped, mask, plans)
+    normalized = _normalize(cropped, mask if cropped_previous is None else cropped_previous, plans)
     configured_spacing = (
         configuration.spacing
         if len(configuration.spacing) == 3
@@ -185,7 +185,8 @@ def crop_to_nonzero(
     )
     cropped_previous = None
     if previous_stage is not None:
-        cropped_previous = np.ascontiguousarray(previous_stage[(slice(None), *slices)])
+        # Sentinels belong to this crop, never to a reusable caller-owned array.
+        cropped_previous = np.array(previous_stage[(slice(None), *slices)], order="C", copy=True)
         outside = (cropped_previous == 0) & ~cropped_mask[None]
         cropped_previous[outside] = -1
     return cropped, segmentation_mask, cropped_previous, bounding_box
@@ -216,13 +217,15 @@ def _validate_previous_stage(
 
 def _normalize(
     data: FloatArray,
-    segmentation_mask: npt.NDArray[np.int8],
+    segmentation_mask: HostArray,
     plans: PlansContract,
 ) -> FloatArray:
     """Apply each channel's plans normalization scheme to a copy of ``data``.
 
     ``data`` is ``(C, *spatial)``; the mask is the ``(1, *spatial)`` non-zero crop
-    mask used by schemes with ``use_mask_for_norm``. Non-finite output raises.
+    segmentation used by schemes with ``use_mask_for_norm`` (labels >= 0).
+    Previous-stage foreground remains eligible even outside image support.
+    Non-finite output raises.
     """
     result = data.copy()
     configuration = plans.configuration
@@ -242,7 +245,7 @@ def _normalize(
 
 def _normalize_channel(
     image: FloatArray,
-    segmentation_mask: npt.NDArray[np.int8],
+    segmentation_mask: HostArray,
     *,
     scheme: str,
     use_mask: bool,
@@ -267,7 +270,8 @@ def _normalize_channel(
         result /= max(standard_deviation, 1e-8)
         return result
     if scheme == "ZScoreNormalization":
-        mask = segmentation_mask >= 0 if use_mask else np.ones(result.shape, dtype=bool)
+        mask = (cast(npt.NDArray[np.signedinteger], segmentation_mask) >= 0
+                if use_mask else np.ones(result.shape, dtype=bool))
         selected = result[mask]
         if not len(selected):
             raise ContractError("z-score normalization mask is empty")

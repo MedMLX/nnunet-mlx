@@ -185,6 +185,7 @@ def assess_fused_class_restore(
             source_spacing,
             target_spacing,
             force=contract.force_separate_z,
+            threshold=contract.separate_z_anisotropy_threshold,
         )
         if separate:
             return FusedRestoreSupport(False, "fused restoration does not support separate-Z")
@@ -255,6 +256,7 @@ def resample_class_logits_argmax_optimized(
         validate_spacing(current_spacing, name="current spacing"),
         validate_spacing(new_spacing, name="new spacing"),
         force=contract.force_separate_z,
+            threshold=contract.separate_z_anisotropy_threshold,
     )
     target_shape = _target_shape(new_shape)
     parallel_work = (
@@ -331,6 +333,33 @@ def _run_metal_kernel(
     return np.ascontiguousarray(np.asarray(output, dtype=np.uint16))
 
 
+def device_class_restore_supported(
+    source_shape: Sequence[int], new_shape: Sequence[int],
+    current_spacing: Sequence[float], new_spacing: Sequence[float],
+    contract: ResamplingContract, *, classes: int,
+) -> bool:
+    """Decide geometry and interpolation support before allocating device logits.
+
+    Value-dependent dtype/magnitude checks remain at the device boundary. Equal
+    spatial shapes need only argmax, regardless of the interpolation policy.
+    """
+    target = _target_shape(new_shape)
+    if len(source_shape) != 3 or classes < 1 or classes > np.iinfo(np.uint16).max + 1:
+        return False
+    _validate_index_range((classes, *source_shape), target)
+    if tuple(source_shape) == target:
+        return True
+    if contract.function_name != "resample_data_or_seg_to_shape" or contract.order != 1:
+        return False
+    separate, _ = separate_z_axis(
+        validate_spacing(current_spacing, name="current spacing"),
+        validate_spacing(new_spacing, name="new spacing"),
+        force=contract.force_separate_z,
+        threshold=contract.separate_z_anisotropy_threshold,
+    )
+    return not separate
+
+
 def resample_device_logits_argmax(
     logits: array,
     new_shape: Sequence[int],
@@ -353,25 +382,16 @@ def resample_device_logits_argmax(
 
     mx, _ = import_mlx()
     target_shape = _target_shape(new_shape)
-    classes = int(logits.shape[-1])
     if (
         logits.ndim != 4
         or logits.dtype not in (mx.float32, mx.float16)
-        or classes > np.iinfo(np.uint16).max + 1
     ):
         return None
+    classes = int(logits.shape[-1])
     source_shape = tuple(int(value) for value in logits.shape[:3])
-    if source_shape != target_shape:
-        if contract.function_name != "resample_data_or_seg_to_shape" or contract.order != 1:
-            return None
-        separate, _ = separate_z_axis(
-            validate_spacing(current_spacing, name="current spacing"),
-            validate_spacing(new_spacing, name="new spacing"),
-            force=contract.force_separate_z,
-        )
-        if separate:
-            return None
-    _validate_index_range((classes, *source_shape), target_shape)
+    if not device_class_restore_supported(source_shape, target_shape, current_spacing,
+                                          new_spacing, contract, classes=classes):
+        return None
     stable = mx.all(core.abs(logits) <= _MAXIMUM_FUSED_MAGNITUDE)
     mx.eval(stable)
     if not bool(stable.item()):

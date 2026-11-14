@@ -158,12 +158,122 @@ def test_liver_runner_writes_label_map_on_the_input_grid(
 
     mask_path = (output / "mask.nii.gz").resolve()
     assert result["outputs"] == {"mask": mask_path.as_posix()}
-    assert sorted(path.name for path in output.iterdir()) == ["mask.nii.gz"]
+    assert sorted(path.name for path in output.iterdir()) == ["mask.complete.json", "mask.nii.gz"]
     mask = nib.load(mask_path)
     labels = np.asarray(mask.dataobj)
     assert labels.shape == (10, 9, 7)
     assert set(np.unique(labels).tolist()) <= {0, 1}
     assert np.allclose(mask.affine, INPUT_AFFINE, rtol=0, atol=1e-6)
+
+
+def test_runner_mask_only_overwrite_removes_previous_probabilities(
+    case: tuple[Path, Path], tmp_path: Path,
+) -> None:
+    """A new mask-only generation cannot retain probabilities of an older mask."""
+    folder, source = case
+    output = tmp_path / "out"
+    medmlx.run(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output),
+               save_probabilities=True)
+    assert (output / "probabilities.npz").is_file()
+    medmlx.run(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output),
+               overwrite=True, save_probabilities=False)
+    assert not (output / "probabilities.npz").exists()
+    assert not (output / "probabilities.pkl").exists()
+
+
+def test_runner_does_not_clobber_destination_created_during_prediction(
+    case: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enforce overwrite=False when publishing, including a concurrent writer."""
+    from medmlx_core.errors import ModelExecutionError
+
+    from nnunet_mlx.prediction.pipeline import RawPredictionResult
+
+    folder, source = case
+    output = tmp_path / "out"
+    target = output / "mask.nii.gz"
+    predict = ModelFolderPredictor.predict_case
+
+    def raced(self: ModelFolderPredictor, image_files: Sequence[str | Path],
+              output_prefix: str | Path, *, save_probabilities: bool,
+              overwrite: bool) -> RawPredictionResult:
+        result = predict(self, image_files, output_prefix,
+                         save_probabilities=save_probabilities, overwrite=overwrite)
+        target.write_bytes(b"concurrent writer")
+        return result
+
+    monkeypatch.setattr(ModelFolderPredictor, "predict_case", raced)
+    with pytest.raises(ModelExecutionError):
+        medmlx.run(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output))
+    assert target.read_bytes() == b"concurrent writer"
+
+
+def test_direct_predictor_rejects_segmentation_input_alias(case: tuple[Path, Path]) -> None:
+    """An explicit overwrite cannot replace the image with its own segmentation."""
+    from nnunet_mlx.errors import ContractError
+
+    folder, source = case
+    before = source.read_bytes()
+    predictor = ModelFolderPredictor(load_model_bundle(folder, configuration="3d_fullres"))
+    with pytest.raises(ContractError):
+        predictor.predict_case([source], source.with_name(source.name.removesuffix(".nii.gz")),
+                               overwrite=True, save_probabilities=False)
+    assert source.read_bytes() == before
+
+
+def test_host_restoration_policy_avoids_full_device_logits(
+    case: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unsupported interpolation policy must select bounded host inference upfront."""
+    from dataclasses import replace
+
+    from nnunet_mlx.prediction.inference import LogitArray
+
+    folder, source = case
+    bundle = load_model_bundle(folder, configuration="3d_fullres")
+    configuration = bundle.plans.configuration
+    bundle = replace(bundle, plans=replace(bundle.plans, configuration=replace(
+        configuration,
+        probability_resampling=replace(configuration.probability_resampling, order=3),
+        spacing=(2.0, 2.0, 2.0),
+    )))
+    predictor = ModelFolderPredictor(bundle)
+
+    def full_device(*args: object, **kwargs: object) -> LogitArray:
+        raise AssertionError("host-only restoration allocated a full device logit volume")
+
+    monkeypatch.setattr(ArrayPredictor, "predict_device_logits_from_preprocessed_data", full_device)
+    result = predictor.predict_case([source], tmp_path / "restored", save_probabilities=False,
+                                    overwrite=False)
+    assert nib.load(result.files.segmentation).shape == nib.load(source).shape
+
+
+@pytest.mark.parametrize("save_probabilities", [False, True])
+def test_folder_workers_allow_cases_that_fit_the_total_budget(
+    case: tuple[Path, Path], tmp_path: Path, save_probabilities: bool,
+) -> None:
+    """Adding workers reduces concurrency for large payloads instead of rejecting the case."""
+    import shutil
+
+    folder, source = case
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    for name in ("a", "b"):
+        shutil.copyfile(source, inputs / f"{name}_0000.nii.gz")
+    predictor = ModelFolderPredictor(
+        load_model_bundle(folder, configuration="3d_fullres", folds=(0,))
+    )
+    serial = predictor.predict_folder(inputs, tmp_path / "serial", overwrite=False,
+                                       save_probabilities=save_probabilities,
+                                       max_inflight_bytes=6500)
+    parallel = predictor.predict_folder(
+        inputs, tmp_path / "workers", overwrite=False, save_probabilities=save_probabilities,
+        preprocessing_processes=2, export_processes=1, max_inflight_bytes=6500,
+    )
+    assert [item.identifier for item in parallel.predictions] == ["a", "b"]
+    for expected, actual in zip(serial.predictions, parallel.predictions, strict=True):
+        np.testing.assert_array_equal(nib.load(actual.prediction.files.segmentation).dataobj,
+                                      nib.load(expected.prediction.files.segmentation).dataobj)
 
 
 @pytest.mark.metal
@@ -420,7 +530,9 @@ def test_siam_runner_predicts_in_canonical_order_and_restores_the_input_grid(
                           source_profile=SIAM_SOURCE_PROFILE, use_mirroring=False)
 
     mask = nib.load(result["outputs"]["mask"])
-    assert sorted(path.name for path in (tmp_path / "siam").iterdir()) == ["mask.nii.gz"]
+    assert sorted(path.name for path in (tmp_path / "siam").iterdir()) == [
+        "mask.complete.json", "mask.nii.gz",
+    ]
     assert mask.shape == (10, 9, 7)
     assert np.allclose(mask.affine, affine, rtol=0, atol=1e-6)
     assert result["details"]["folds"] == [1] and result["details"]["mirroring_axes"] == []
@@ -494,7 +606,7 @@ def test_siam_replaces_only_the_output_directory_entry(
         assert not target.is_symlink()
         assert nib.load(target).shape == data.shape
     else:
-        with pytest.raises(InvalidInputError, match="already exists"):
+        with pytest.raises(InvalidInputError, match="already exist"):
             named_models.siam(
                 image_path=str(source), output_dir=str(output), weights_path=str(siam_model),
                 fold=1,
@@ -506,7 +618,8 @@ def test_siam_replaces_only_the_output_directory_entry(
         assert other.read_bytes() == previous
     else:
         assert not other.exists()
-    assert sorted(path.name for path in output.iterdir()) == ["mask.nii.gz"]
+    expected_names = ["mask.complete.json", "mask.nii.gz"] if overwrite else ["mask.nii.gz"]
+    assert sorted(path.name for path in output.iterdir()) == expected_names
 
 
 def test_cli_predict_computes_what_the_runner_computes(

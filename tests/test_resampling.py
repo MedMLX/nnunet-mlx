@@ -111,3 +111,29 @@ def test_float_resampling_matches_pinned_nnunet_bitwise(
     )
     assert expected.dtype == dtype
     np.testing.assert_array_equal(actual, np.asarray(expected, dtype=np.float32))
+
+
+@pytest.mark.oracle
+@pytest.mark.parametrize("options", [{}, {"force_separate_z": None,
+                                          "separate_z_anisotropy_threshold": 5.0}])
+def test_spline_plan_options_match_pinned_upstream(options: dict[str, object]) -> None:
+    """Retain omitted defaults and explicit anisotropy policy through restoration."""
+    from nnunet_mlx.data.resampling import resample_probabilities_or_data
+    from nnunet_mlx.prediction.restore import resample_class_logits_argmax_parallel
+
+    source = import_module("nnunetv2.preprocessing.resampling.default_resampling")
+    values = np.random.default_rng(904).normal(size=(3, 3, 5, 7)).astype(np.float32)
+    args = ((2, 7, 7), (4.0, 1.0, 1.0), (4.0, 1.0, 1.0))
+    kwargs = {"is_seg": False, "order": 1, "order_z": 0, **options}
+    contract = ResamplingContract.from_configuration(
+        {"resampling_fn_probabilities": "resample_data_or_seg_to_shape",
+         "resampling_fn_probabilities_kwargs": kwargs},
+        field="resampling_fn_probabilities", expected_is_seg=False,
+    )
+    expected = source.resample_data_or_seg_to_shape(values, *args, **kwargs)
+    np.testing.assert_array_equal(
+        resample_probabilities_or_data(values, *args, contract), expected,
+    )
+    np.testing.assert_array_equal(
+        resample_class_logits_argmax_parallel(values, *args, contract), expected.argmax(0),
+    )

@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 from nnunet_reference.arrays import host_array
 
-from nnunet_mlx.prediction.arithmetic import NonOverlappingConvTranspose2d, OrderedConv2d
 from nnunet_mlx.runtime import import_mlx, tree_flatten
 
 
@@ -40,6 +39,8 @@ def test_nonoverlapping_2d_transpose_matches_pinned_cpu(
     layer = nn.ConvTranspose2d(shape[-1], outputs, kernel, stride=kernel)
     layer.weight = mx.array(source.weight.detach().numpy().transpose(1, 2, 3, 0))
     layer.bias = mx.array(source.bias.detach().numpy())
+    from nnunet_mlx.prediction.arithmetic import NonOverlappingConvTranspose2d
+
     candidate = NonOverlappingConvTranspose2d(layer)
     candidate.eval()
     data = np.random.default_rng(409).normal(size=shape).astype(np.float32)
@@ -118,6 +119,8 @@ def test_ordered_2d_convolution_preserves_block_and_projection_rounding(
     layer.weight = mx.array(weight)
     if bias:
         layer.bias = mx.array(offset)
+    from nnunet_mlx.prediction.arithmetic import OrderedConv2d
+
     candidate = OrderedConv2d(layer)
     candidate.eval()
     values = np.random.default_rng(291).normal(size=(2, *spatial, channels)).astype(np.float32)

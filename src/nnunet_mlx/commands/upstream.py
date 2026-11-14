@@ -110,13 +110,17 @@ def predict_command(
     ] = None,
     num_parts: Annotated[int, typer.Option("-num_parts", min=1)] = 1,
     part_id: Annotated[int, typer.Option("-part_id", min=0)] = 0,
+    max_inflight_bytes: Annotated[
+        int, typer.Option("--max-inflight-bytes", min=1,
+                          help="Memory budget for prepared and queued case payloads, in bytes.")
+    ] = 2 * 1024**3,
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Predict a folder from a trained nnU-Net model, taking nnUNetv2_predict's options.
 
     The trained PyTorch model is converted to MLX on first use and cached in
     NNUNET_MLX_CACHE (default ~/.cache/nnunet-mlx); later runs reuse the conversion
-    until a checkpoint changes. As in nnU-Net, existing outputs are replaced unless
+    until checkpoint or JSON metadata changes. Existing outputs are replaced unless
     --continue_prediction is given.
     """
     from nnunet_mlx.storage.upstream import cached_conversion, resolve_results_folder
@@ -146,9 +150,11 @@ def predict_command(
     from nnunet_mlx.storage.conversion import read_conversion_manifest
 
     # The checkpoints record their configuration; -m runs need no -c.
+    manifest = read_conversion_manifest(converted)
     bundle = load_model_bundle(
-        converted, configuration=read_conversion_manifest(converted)["configuration"],
-        folds=folds, source_profile=DEFAULT_INFERENCE_SOURCE_PROFILE,
+        converted, configuration=manifest["configuration"],
+        folds=tuple(entry["fold"] for entry in manifest["folds"]) if folds is None else folds,
+        source_profile=DEFAULT_INFERENCE_SOURCE_PROFILE,
     )
     if disable_tta:
         bundle = replace(bundle, mirroring_axes=())
@@ -163,7 +169,7 @@ def predict_command(
         part_id=part_id,
         preprocessing_processes=preprocessing_processes,
         export_processes=export_processes,
-        max_inflight_bytes=2 * 1024**3,
+        max_inflight_bytes=max_inflight_bytes,
     )
     if json_output:
         typer.echo(json.dumps(result.to_payload(), sort_keys=True))

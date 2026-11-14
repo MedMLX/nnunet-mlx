@@ -25,6 +25,8 @@ type HostArray = npt.NDArray[np.generic]
 type FloatArray = npt.NDArray[np.float32]
 type LogitArray = npt.NDArray[np.float16] | npt.NDArray[np.float32]
 
+_MIRROR_OUTPUT_BUDGET_BYTES = 256 * 1024**2
+
 
 def compute_steps(
     image_size: Sequence[int],
@@ -491,9 +493,10 @@ def mirrored_prediction(
     """Average the tile and its mirrored predictions, flipped back, in upstream order.
 
     Mirrored inputs are made contiguous before the network; outputs stay on
-    Metal and are summed lazily. Each view is queued with ``async_eval`` once
-    built, so the forwards run one after another rather than interleaved in one
-    graph, which bounds intermediates to about one forward at unchanged speed.
+    Metal. When retaining all views would exceed 256 MiB, each running sum is
+    evaluated before the next forward, releasing consumed outputs. Smaller heads
+    retain queued execution: synchronizing each sum slowed the three-class liver
+    tile. Both routes preserve the original left-to-right additions.
     """
     expected_shape = (*tile.shape[:-1], num_classes)
     raw_prediction = model(tile)
@@ -501,7 +504,8 @@ def mirrored_prediction(
     prediction = cast("array", raw_prediction)
     if not axes:
         return prediction
-    predictions = [prediction]
+    count = 1
+    evaluate_sum = prediction.nbytes * (1 << len(axes)) > _MIRROR_OUTPUT_BUDGET_BYTES
     mx.async_eval(prediction)
     for axis_count in range(1, len(axes) + 1):
         for selected in combinations(axes, axis_count):
@@ -509,9 +513,14 @@ def mirrored_prediction(
             mirrored = mx.contiguous(mx.flip(tile, axis=mlx_axes))
             raw_prediction = model(mirrored)
             _validate_prediction(raw_prediction, expected_shape, mx)
-            predictions.append(mx.flip(cast("array", raw_prediction), axis=mlx_axes))
-            mx.async_eval(predictions[-1])
-    return sum(predictions[1:], predictions[0]) / len(predictions)
+            current = mx.flip(cast("array", raw_prediction), axis=mlx_axes)
+            mx.async_eval(current)
+            prediction = prediction + current
+            if evaluate_sum:
+                mx.eval(prediction)
+            count += 1
+            del current, raw_prediction
+    return prediction / count
 
 
 def _validate_prediction(

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from medmlx_core.weights import weights_revision
 
-from nnunet_mlx.contracts import parse_boolean, parse_number, parse_sequence
+from nnunet_mlx.contracts import parse_boolean, parse_mapping, parse_number, parse_sequence
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.medmlx_types import RunResult
 
@@ -320,24 +320,24 @@ def _run(
     if source_profile is None:
         source_profile = DEFAULT_INFERENCE_SOURCE_PROFILE
     output = Path(output_dir).expanduser()
+    from nnunet_mlx.prediction.export import (
+        ExportedFiles,
+        completion_receipt_path,
+        publish_prediction,
+        require_prediction_destination,
+    )
+
     targets = {"mask": output / f"{SEGMENTATION_STEM}{file_ending}"}
     if save_probabilities:
         targets["probabilities"] = output / PROBABILITIES
         targets["probability_properties"] = output / PROBABILITY_PROPERTIES
-    existing = [path.as_posix() for path in targets.values() if path.exists()]
+    generation = ExportedFiles(targets["mask"], probabilities=output / PROBABILITIES,
+                              properties=output / PROBABILITY_PROPERTIES)
+    final_files = ExportedFiles(targets["mask"], probabilities=targets.get("probabilities"),
+                               properties=targets.get("probability_properties"))
     with _reported_as("input"):
-        if any(
-            target.resolve() == image.resolve()
-            or (target.exists() and target.samefile(image))
-            for target in targets.values()
-            for image in images
-        ):
-            raise ContractError("nnU-Net outputs must differ from every input image")
-        if existing and not overwrite:
-            raise ContractError(
-                f"nnU-Net outputs already exist: {', '.join(existing)}; "
-                "pass overwrite=True to replace them"
-            )
+        require_prediction_destination(generation, overwrite=overwrite, input_files=images,
+                                       extra_paths=(completion_receipt_path(output / "mask"),))
 
     from nnunet_mlx.runtime import import_mlx, runtime_info
 
@@ -378,16 +378,12 @@ def _run(
                 save_probabilities=save_probabilities,
                 overwrite=True,
             )
-            produced = {
-                "mask": result.files.segmentation,
-                "probabilities": result.files.probabilities,
-                "probability_properties": result.files.properties,
-            }
-            for role, target in targets.items():
-                source = produced[role]
-                if source is None:
-                    raise ContractError(f"nnU-Net prediction did not write its {role} output")
-                os.replace(source, target)
+            receipt = read_json_object(completion_receipt_path(Path(staging) / "case"))
+            publish_prediction(
+                result.files, final_files, generation=generation, output_prefix=output / "mask",
+                overwrite=overwrite, input_files=images,
+                completion_identity=parse_mapping(receipt["identity"], name="prediction identity"),
+            )
     metrics: dict[str, object] = {}
     if result.metrics is not None:
         metrics = {
@@ -413,6 +409,8 @@ def _run(
             "mirroring_axes": list(bundle.mirroring_axes),
             "step_fraction": step_fraction,
             "accumulation": ACCUMULATION,
+            "decoding": result.decoding,
+            "save_probabilities": save_probabilities,
             "backend": backend,
             "preprocessed_shape": list(result.preprocessed_shape),
             "metrics": metrics,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -12,6 +12,7 @@ from nnunet_mlx.data.resampling import (
     nearest_axis_indices,
     resample_probabilities_or_data,
     resize_plane,
+    resize_worker_count,
     separate_z_axis,
     validate_spacing,
 )
@@ -76,12 +77,13 @@ def resample_class_logits_argmax_parallel(
     new_spacing: Sequence[float],
     contract: ResamplingContract,
 ) -> npt.NDArray[np.uint16]:
-    """Resample classes concurrently while preserving ordered argmax semantics.
+    """Resample with bounded resize workers and preserve ordered argmax semantics.
 
     Same arguments and result as ``resample_class_logits_argmax``. When the plans
     resample the separate axis with order 0 and that axis is not enlarged, each target
     plane is built from one nearest source plane (``separate_plane_argmax``) and
-    planes are processed in parallel; otherwise channels are resampled in parallel.
+    planes are processed in parallel; otherwise each channel's resampler owns the
+    worker budget. Channel and slice thread pools are never nested.
     """
 
     values, target_shape = _validated_inputs(logits, new_shape)
@@ -92,17 +94,13 @@ def resample_class_logits_argmax_parallel(
             validate_spacing(current_spacing, name="current spacing"),
             validate_spacing(new_spacing, name="new spacing"),
             force=contract.force_separate_z,
+            threshold=contract.separate_z_anisotropy_threshold,
         )
         if separate and axis is not None and target_shape[axis] <= int(values.shape[axis + 1]):
             return separate_plane_argmax(values, target_shape, axis, order=contract.order)
-    channels = _parallel_channels(
-        values,
-        target_shape,
-        current_spacing,
-        new_spacing,
-        contract,
+    return resample_class_logits_argmax(
+        values, target_shape, current_spacing, new_spacing, contract,
     )
-    return _ordered_argmax(channels)
 
 
 def separate_plane_argmax(
@@ -149,40 +147,15 @@ def separate_plane_argmax(
         selector[axis] = target_index
         output[tuple(selector)] = labels
 
-    worker_count = min(PARALLEL_SEPARATE_Z_WORKERS, target_shape[axis])
+    working_set = (24 * (values[0].size // values.shape[axis + 1])
+                   + 64 * int(np.prod(in_plane_shape)))
+    worker_count = min(PARALLEL_SEPARATE_Z_WORKERS,
+                       resize_worker_count(target_shape[axis], working_set,
+                                           retained_bytes=output.nbytes))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         for _ in executor.map(restore_plane, range(target_shape[axis])):
             pass
     return output
-
-
-def _parallel_channels(
-    values: HostArray,
-    target_shape: tuple[int, ...],
-    current_spacing: Sequence[float],
-    new_spacing: Sequence[float],
-    contract: ResamplingContract,
-) -> Iterator[npt.NDArray[np.float32]]:
-    """Resample class channels in bounded parallel batches."""
-    channel_count = int(values.shape[0])
-    worker_count = min(PARALLEL_SEPARATE_Z_WORKERS, channel_count)
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        for start in range(0, channel_count, worker_count):
-            stop = min(start + worker_count, channel_count)
-            pending = tuple(
-                executor.submit(
-                    _resample_channel,
-                    values,
-                    channel_index,
-                    target_shape,
-                    current_spacing,
-                    new_spacing,
-                    contract,
-                )
-                for channel_index in range(start, stop)
-            )
-            for future in pending:
-                yield future.result()
 
 
 def _validated_inputs(

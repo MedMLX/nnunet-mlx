@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import platform
 import tempfile
@@ -19,11 +20,12 @@ import numpy as np
 import numpy.typing as npt
 
 from nnunet_mlx import __version__
-from nnunet_mlx.contracts import parse_number
+from nnunet_mlx.contracts import parse_mapping, parse_number
 from nnunet_mlx.data.labels import LabelSemantics
 from nnunet_mlx.data.resampling import resample_probabilities_or_data
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.kernels.metal_restore import (
+    device_class_restore_supported,
     resample_class_logits_argmax_optimized,
     resample_device_logits_argmax,
 )
@@ -39,6 +41,7 @@ from nnunet_mlx.storage.imageio import (
     read_segmentation,
     write_segmentation,
 )
+from nnunet_mlx.storage.properties import load_properties_pickle
 
 if TYPE_CHECKING:
     from mlx.core import array
@@ -46,7 +49,7 @@ if TYPE_CHECKING:
 type FloatArray = npt.NDArray[np.float32]
 
 # Bump only when prediction, export, or continuation equivalence changes.
-PREDICTION_CONTRACT_VERSION = 4
+PREDICTION_CONTRACT_VERSION = 5
 COMPLETION_RECEIPT_SCHEMA_VERSION = 3
 _PROBABILITY_CHUNK_BYTES = 16 * 1024 * 1024
 
@@ -76,9 +79,9 @@ class ExportedFiles:
     """
 
     segmentation: Path
-    image_properties: Path | None
-    probabilities: Path | None
-    properties: Path | None
+    image_properties: Path | None = None
+    probabilities: Path | None = None
+    properties: Path | None = None
 
     @property
     def paths(self) -> tuple[Path, ...]:
@@ -299,6 +302,24 @@ def predict_same_grid_segmentation(
     )
 
 
+def can_restore_device_segmentation(
+    source_shape: Sequence[int], properties: Mapping[str, object],
+    plans: PlansContract, semantics: LabelSemantics,
+) -> bool:
+    """Preflight the score grid and resampling policy without allocating logits."""
+    if semantics.has_regions or len(source_shape) != 3:
+        return False
+    crop_shape = _shape(properties.get("shape_after_cropping_and_before_resampling"),
+                        name="shape_after_cropping_and_before_resampling")
+    current_spacing, original_spacing = _prediction_resampling_spacings(
+        properties, plans, crop_shape
+    )
+    return device_class_restore_supported(
+        source_shape, crop_shape, current_spacing, original_spacing,
+        plans.configuration.probability_resampling, classes=semantics.output_channels,
+    )
+
+
 def restore_device_segmentation(
     logits: array,
     properties: Mapping[str, object],
@@ -432,6 +453,7 @@ def export_prediction(
     image_reader_writer: str,
     overwrite: bool,
     completion_identity: Mapping[str, object] | None = None,
+    input_files: Sequence[str | Path] = (),
 ) -> ExportedFiles:
     """Write a prediction and its completion receipt using staged outputs.
 
@@ -454,6 +476,8 @@ def export_prediction(
         completion_identity: JSON-native identity recorded in the receipt;
             ``inputs``, ``labels`` and ``regions_class_order`` are also copied into
             the ``.pkl`` sidecar.
+        input_files: Additional input artifacts protected from output aliases,
+            including ensemble probability files and their properties sidecars.
 
     Raises:
         ContractError: If outputs exist and ``overwrite`` is false, the identity is
@@ -463,12 +487,15 @@ def export_prediction(
         output_prefix, file_ending=file_ending, image_reader_writer=image_reader_writer,
         save_probabilities=prediction.probabilities is not None,
     )
-    require_prediction_destination(files, overwrite=overwrite)
     prefix = Path(output_prefix)
-    prefix.parent.mkdir(parents=True, exist_ok=True)
-    obsolete = _obsolete_prediction_outputs(
-        prefix, files, file_ending=file_ending, image_reader_writer=image_reader_writer
+    generation = prediction_output_files(
+        prefix, file_ending=file_ending, image_reader_writer=image_reader_writer,
+        save_probabilities=True,
     )
+    inputs = (*_identity_inputs(completion_identity), *input_files)
+    require_prediction_destination(generation, overwrite=overwrite, input_files=inputs,
+                                   extra_paths=(completion_receipt_path(prefix),))
+    prefix.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".{prefix.name}.", dir=prefix.parent) as staging:
         staged = prediction_output_files(
             Path(staging) / prefix.name, file_ending=file_ending,
@@ -483,55 +510,115 @@ def export_prediction(
                 and prediction.probabilities is not None):
             np.savez_compressed(staged.probabilities, probabilities=prediction.probabilities)
             sidecar_properties = dict(properties)
+            sidecar_properties["probability_grid"] = {
+                "shape": list(prediction.probabilities.shape[1:]),
+                "axis_order": "ZYX", "image_reader_writer": image_reader_writer,
+            }
+            if "nibabel_stuff" in properties:
+                geometry = parse_mapping(properties["nibabel_stuff"], name="nibabel_stuff")
+                affine = np.asarray(geometry.get("reoriented_affine",
+                                                geometry["original_affine"]), dtype=np.float64)
+                grid = cast(dict[str, object], sidecar_properties["probability_grid"])
+                # Saved probabilities retain ZYX reader axes, even when labels are
+                # reoriented back to the source NIfTI's XYZ grid during writing.
+                grid["affine"] = affine[:, [2, 1, 0, 3]]
             for key in ("inputs", "labels", "regions_class_order"):
                 if completion_identity is not None and key in completion_identity:
                     sidecar_properties[key] = completion_identity[key]
             with staged.properties.open("wb") as handle:
                 pickle.dump(sidecar_properties, handle)
         _validate_staged_prediction(staged, prediction, image_reader_writer, properties)
-        receipt = {
-            "schema_version": COMPLETION_RECEIPT_SCHEMA_VERSION,
-            "prediction_contract_version": PREDICTION_CONTRACT_VERSION,
-            "execution_provenance": _execution_provenance(),
-            "identity": canonical_prediction_identity(completion_identity or {}),
-            "outputs": {path.name: file_signature(path) for path in staged.paths},
-        }
-        staged_receipt = Path(staging) / "completion.json"
-        staged_receipt.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
-        # Invalidate the previous receipt before mutating any committed output, so an
-        # interrupted overwrite can never leave a mixed generation marked complete.
-        completion_receipt_path(prefix).unlink(missing_ok=True)
-        for source, destination in zip(staged.paths, files.paths, strict=True):
-            source.replace(destination)
-        for path in obsolete:
-            path.unlink(missing_ok=True)
-        staged_receipt.replace(completion_receipt_path(prefix))
+        publish_prediction(staged, files, generation=generation, output_prefix=prefix,
+                           overwrite=overwrite, input_files=inputs,
+                           completion_identity=completion_identity)
     return files
 
 
-def _obsolete_prediction_outputs(
-    output_prefix: Path,
-    files: ExportedFiles,
-    *,
-    file_ending: str,
-    image_reader_writer: str,
-) -> tuple[Path, ...]:
-    # The full owned generation includes the optional probability artifacts, so
-    # switching to label-only output cannot leave stale siblings behind.
-    """Identify stale artifacts belonging to an earlier prediction generation."""
-    generation = prediction_output_files(
-        output_prefix, file_ending=file_ending, image_reader_writer=image_reader_writer,
-        save_probabilities=True,
-    )
-    requested = set(files.paths)
-    return tuple(path for path in generation.paths if path not in requested)
-
-
-def require_prediction_destination(files: ExportedFiles, *, overwrite: bool) -> None:
-    """Reject existing output paths unless overwrite is enabled."""
-    existing = [path for path in files.paths if path.exists()]
+def require_prediction_destination(
+    files: ExportedFiles, *, overwrite: bool, input_files: Sequence[str | Path] = (),
+    extra_paths: Sequence[Path] = (),
+) -> None:
+    """Protect existing generation members and reject input aliases, including hardlinks."""
+    paths = (*files.paths, *extra_paths)
+    for target in paths:
+        for source in input_files:
+            image = Path(source)
+            if target.resolve() == image.resolve() or (
+                target.exists() and image.exists() and target.samefile(image)
+            ):
+                raise ContractError("prediction outputs must differ from every input image")
+    existing = [path for path in paths if path.exists() or path.is_symlink()]
     if existing and not overwrite:
         raise ContractError(f"prediction outputs already exist: {existing}")
+
+
+def publish_prediction(
+    staged: ExportedFiles, files: ExportedFiles, *, generation: ExportedFiles,
+    output_prefix: Path, overwrite: bool, input_files: Sequence[str | Path] = (),
+    completion_identity: Mapping[str, object] | None = None,
+) -> None:
+    """Publish validated staged files under final names, then commit their receipt.
+
+    All entry points supply their complete generation, including optional artifacts
+    to retire on overwrite. No-clobber hardlinks enforce overwrite=False at each
+    publication, even when another process creates a target during inference.
+    Interrupted overwrites have no receipt; failed no-clobber publications remove
+    only links this call created. File replacement is atomic, the group is not.
+    """
+    receipt_path = completion_receipt_path(output_prefix)
+    require_prediction_destination(generation, overwrite=overwrite, input_files=input_files,
+                                   extra_paths=(receipt_path,))
+    pairs = tuple(zip(staged.paths, files.paths, strict=True))
+    if staged.properties is not None:
+        properties = load_properties_pickle(staged.properties)
+        properties["completion_receipt"] = receipt_path.name
+        with staged.properties.open("wb") as handle:
+            pickle.dump(properties, handle)
+    receipt = {
+        "schema_version": COMPLETION_RECEIPT_SCHEMA_VERSION,
+        "prediction_contract_version": PREDICTION_CONTRACT_VERSION,
+        "execution_provenance": _execution_provenance(),
+        "identity": canonical_prediction_identity(completion_identity or {}),
+        "outputs": {target.name: file_signature(source) for source, target in pairs},
+    }
+    staged_receipt = staged.segmentation.parent / ".publication.complete.json"
+    staged_receipt.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+    if overwrite:
+        # A mixed generation after interruption must never retain a valid receipt.
+        receipt_path.unlink(missing_ok=True)
+        for source, target in pairs:
+            source.replace(target)
+        for path in set(generation.paths) - set(files.paths):
+            path.unlink(missing_ok=True)
+        staged_receipt.replace(receipt_path)
+        return
+    published: list[tuple[Path, Path]] = []
+    try:
+        for source, target in (*pairs, (staged_receipt, receipt_path)):
+            os.link(source, target)
+            published.append((source, target))
+    except OSError as error:
+        for source, target in reversed(published):
+            if target.exists() and target.samefile(source):
+                target.unlink()
+        raise ContractError(f"cannot publish prediction without overwrite: {error}") from error
+
+
+def _identity_inputs(identity: Mapping[str, object] | None) -> tuple[Path, ...]:
+    """Recover recorded input paths for publication-time alias protection."""
+    if identity is None:
+        return ()
+    inputs = identity.get("inputs", [])
+    if not isinstance(inputs, list | tuple):
+        return ()
+    result: list[Path] = []
+    for item in cast(Sequence[object], inputs):
+        if isinstance(item, str):
+            result.append(Path(item))
+    previous = identity.get("previous_stage")
+    if isinstance(previous, str):
+        result.append(Path(previous))
+    return tuple(result)
 
 
 def canonical_prediction_identity(identity: Mapping[str, object]) -> dict[str, object]:

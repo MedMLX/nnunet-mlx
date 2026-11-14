@@ -174,8 +174,13 @@ class PlainConvUNetSpec:
             raise ContractError("PlainConvUNet requires consistent 2-D or 3-D spatial rows")
         _number(self.norm_eps, name="norm eps")
         _number(self.leaky_slope, name="leaky slope")
-        if self.norm_eps <= 0 or self.leaky_slope < 0:
-            raise ContractError("normalization epsilon and leaky slope are invalid")
+        if any(value < 1 or value % 2 == 0 for row in self.kernel_sizes for value in row):
+            raise ContractError("only positive odd convolution kernels are supported")
+        if self.norm_eps <= 0:
+            raise ContractError("normalization epsilon must be positive")
+        # The fused maximum expression equals piecewise LeakyReLU only in this range.
+        if not 0 <= self.leaky_slope <= 1:
+            raise ContractError("LeakyReLU negative_slope must be in [0, 1]")
 
     @property
     def spatial_dims(self) -> int:
@@ -301,8 +306,12 @@ class ResidualEncoderUNetSpec:
             )
         _number(self.norm_eps, name="norm eps")
         _number(self.leaky_slope, name="leaky slope")
-        if self.norm_eps <= 0 or self.leaky_slope < 0:
-            raise ContractError("normalization epsilon and leaky slope are invalid")
+        if any(value < 1 or value % 2 == 0 for row in self.kernel_sizes for value in row):
+            raise ContractError("only positive odd convolution kernels are supported")
+        if self.norm_eps <= 0:
+            raise ContractError("normalization epsilon must be positive")
+        if not 0 <= self.leaky_slope <= 1:
+            raise ContractError("LeakyReLU negative_slope must be in [0, 1]")
         if self.stem_channels is not None and self.stem_channels < 1:
             raise ContractError("stem channels must be positive")
         if self.bottleneck_channels is not None:

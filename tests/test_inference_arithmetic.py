@@ -15,9 +15,7 @@ from nnunet_mlx.kernels.metal_instance_norm import (
     inverse_standard_deviation,
     spatial_statistics,
 )
-from nnunet_mlx.model.network import PlainConvUNet
 from nnunet_mlx.model.topology import PlainConvUNetSpec
-from nnunet_mlx.prediction.arithmetic import OrderedConv3d, apply_inference_arithmetic
 from nnunet_mlx.runtime import import_mlx, tree_flatten
 
 
@@ -47,6 +45,8 @@ def test_ordered_convolution_matches_bias_first_cpu_reduction(
     native = nn.Conv3d(channels, outputs, 3, padding=1, stride=stride)
     native.weight = mx.array(np.moveaxis(source.weight.detach().numpy(), 1, -1))
     native.bias = mx.array(source.bias.detach().numpy())
+    from nnunet_mlx.prediction.arithmetic import OrderedConv3d
+
     candidate = OrderedConv3d(native)
     candidate.eval()
     data = np.random.default_rng(34).normal(size=(2, channels, 8, 8, 8)).astype(np.float32)
@@ -181,6 +181,9 @@ def test_totalsegmentator_fusions_preserve_logits_and_checkpoint_updates(
     mx, _ = import_mlx()
     mx.random.seed(412)
     spec = replace(tiny_spec, encoder_convs=encoder_convs, decoder_convs=decoder_convs)
+    from nnunet_mlx.model.network import PlainConvUNet
+    from nnunet_mlx.prediction.arithmetic import apply_inference_arithmetic
+
     generic, optimized = PlainConvUNet(spec), PlainConvUNet(spec)
     for model in (generic, optimized):
         model.eval()

@@ -125,6 +125,7 @@ def test_chunked_probability_restoration_preserves_crop_axes_and_caller_logits(
         assert actual.probabilities is None
 
 
+@pytest.mark.qualification
 def test_runner_preprocessing_matches_upstream_bitwise(
     upstream_runner_recording: UpstreamRecording,
 ) -> None:
@@ -147,11 +148,11 @@ def test_runner_preprocessing_matches_upstream_bitwise(
 
 @pytest.mark.parametrize("head", ["class", "region"])
 def test_runner_head_conversion_matches_upstream(
-    upstream_runner_recording: UpstreamRecording,
+    controlled_runner_recording: UpstreamRecording,
     head: str,
 ) -> None:
     """Compare class and region head conversion with recorded upstream results."""
-    _, arrays = upstream_runner_recording
+    _, arrays = controlled_runner_recording
     probabilities = inference.logits_to_probabilities(
         arrays[f"head_logits_{head}"],
         has_regions=head == "region",
@@ -167,6 +168,7 @@ def test_runner_head_conversion_matches_upstream(
 
 
 @pytest.mark.parametrize("name", ["default", "no_mirroring", "fold_1"])
+@pytest.mark.qualification
 def test_runner_restoration_matches_upstream(
     upstream_runner_recording: UpstreamRecording,
     name: str,
@@ -196,6 +198,7 @@ def test_runner_restoration_matches_upstream(
     )
 
 
+@pytest.mark.qualification
 def test_fp16_fold_averaging_matches_upstream_bitwise(
     upstream_runner_recording: UpstreamRecording,
     monkeypatch: pytest.MonkeyPatch,
@@ -221,12 +224,12 @@ def test_fp16_fold_averaging_matches_upstream_bitwise(
 
 @pytest.mark.parametrize("count", [1, 2, 3, 7])
 def test_fp16_fold_rounding_matches_recorded_upstream_operations(
-    upstream_runner_recording: UpstreamRecording,
+    controlled_runner_recording: UpstreamRecording,
     monkeypatch: pytest.MonkeyPatch,
     count: int,
 ) -> None:
     """Match recorded FP16 rounding across multiple fold counts."""
-    _, arrays = upstream_runner_recording
+    _, arrays = controlled_runner_recording
 
     def recorded_fold(model: RecordedFold, *args: object, **kwargs: object) -> NumericArray:
         """Return the seeded rounding input for one source fold."""
@@ -235,7 +238,7 @@ def test_fp16_fold_rounding_matches_recorded_upstream_operations(
     monkeypatch.setattr(inference, "_predict_model_logits", recorded_fold)
     actual = inference.average_fold_logits(
         tuple(RecordedFold(index) for index in range(count)),
-        arrays["preprocessed"],
+        np.zeros((1, 8, 8, 8), dtype=np.float32),
         patch_size=(8, 8, 8),
         num_outputs=2,
         accumulation="nnunet-fp16",

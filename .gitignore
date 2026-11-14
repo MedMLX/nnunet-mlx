@@ -21,6 +21,8 @@ htmlcov/
 /models/
 /checkpoints/
 /outputs/
+/results/
+/tmp/
 *.nii
 *.nii.gz
 *.dcm

@@ -13,6 +13,12 @@ models with up to 27 outputs. Compilation is off by default because it is no fas
 the fused native kernels (128³ forward, M5 Max: 96.8 vs 98.2 ms uncompiled vs compiled for
 the liver `PlainConvUNet`).
 
+Compilation requires fixed model state. Checkpoint-backed multi-fold bundles reject
+`compile_models=True` with a specific error because their shared weights change between folds.
+Prediction results record `accumulation` and `decoding`; MedMLX returns these in
+`details`, together with `save_probabilities`. Decoding is `logit-argmax`,
+`softmax-argmax`, or `sigmoid-region-threshold`.
+
 `--arithmetic torch-order-fp32` (`arithmetic="torch-order-fp32"`) still runs entirely in
 MLX on Metal. It selects local kernels that sum float32 values in the pinned PyTorch CPU
 order, which some released models need to reproduce their reference labels exactly. It
@@ -26,6 +32,9 @@ profile. Profiles cover inference only, not training or segmentation quality. Pr
 without a ✓ in the README are accepted and run within the supported configurations,
 without a published full-model comparison.
 
+Accepted convolution kernels are positive and odd, and LeakyReLU slopes are in [0, 1].
+These bounds keep padding and fused activation semantics aligned with the pinned architecture.
+
 The original TotalSegmentator `v2.0.0-weights` plans use older architecture fields. For
 the `totalsegmentator-v2-ct` identities the architecture is reconstructed in memory with
 the pinned nnU-Net defaults, and the plans files are unchanged.
@@ -37,6 +46,11 @@ integers or ASCII decimal strings; boolean, fractional, padded and Unicode value
 rejected even where upstream's `int()` accepts them. `conversion.json` is optional export
 metadata: inference does not read it, and `read_conversion_manifest` validates it and its
 payload files only for inspection.
+
+The automatic conversion cache also checks the complete source plans and dataset JSON,
+a conversion-contract version, checkpoint size/mtime and cached payload availability.
+Changing metadata rebuilds the conversion even when the checkpoint is unchanged.
+No content digests are required.
 
 `details.weights_revision` records the downloaded Hugging Face commit, or `null` for a
 folder without a MedMLX download record.
@@ -52,6 +66,14 @@ folder without a MedMLX download record.
 Probabilities stay on the image reader's array grid; read them with their properties
 sidecar. As in nnU-Net, requesting probabilities makes class models take the argmax after
 float32 softmax rather than of the logits, so near ties can segment differently.
+
+Saved probability metadata records the array shape, ZYX axis convention and active
+Nibabel array affine. Ensembling compares active reader grids as well as original
+geometry and rejects native/reoriented arrays that do not align.
+All file-based prediction APIs publish staged, read-back-validated outputs through one
+helper. The completion receipt is written under the final names last. Overwrites remove
+obsolete probability sidecars; `overwrite=False` protects the complete generation and
+uses no-clobber publication. Outputs that alias inputs, including hardlinks, are rejected.
 `details` holds the `dataset.json` label table, `output_kind` (`binary_mask` or
 `label_map`), the selected options, checkpoint signatures and timings. The Python runner
 does not expose cascade stages; use the CLI's `--previous-stage`.
@@ -226,6 +248,8 @@ upstream reference runs `nnUNetPredictor` with the settings `siam-pred -m 0` use
 | Full-head T1, 0.88 mm, RAS | 0 | 99.994% | 0.997 (`Anomalies`) | 0.0038 |
 | Skull-stripped glioma T1, 1 mm, LPS | 0 | 99.990% | 0.9995 | 0.0040 |
 
+Dice in this table measures agreement with upstream predictions.
+
 The glioma case goes through the runner's reorientation: the same 879 voxels differ
 whether its LPS output or the canonical prediction is compared, so restoring the input
 grid adds no differences.
@@ -234,3 +258,48 @@ On an Apple M5 Max (MLX 0.32.4), the five-fold full-head T1 run takes 22 s (20 t
 2.2 s preprocessing, 19.7 s sliding window) with a 16.0 GB MLX peak; the PyTorch CPU
 reference takes 1,328 s. Peak memory follows the field of view: a 400 mm head and
 shoulders CT reached 27.3 GB.
+
+## Bounded allocation and current comparisons
+
+Label-only inference checks restoration geometry and resampling policy before
+allocating complete device logits. Unsupported policies take the host path with
+bounded device slabs. Host restoration uses one level of resize parallelism, with
+concurrency limited by estimated working sets. `--max-inflight-bytes` controls
+prepared and queued payloads; oversized preparations drain the queue and run alone,
+and oversized exports write inline. Active preprocessing/restoration scratch is
+additional to that payload budget.
+
+Mirrored outputs are added in the original order. Running sums are materialized when
+retaining all views would exceed 256 MiB. Smaller heads keep queued execution: forcing
+every sum to synchronize increased a three-class liver tile from 802 to 836 ms in the
+diagnostic probe. With conditional materialization, that tile measured 792 ms and kept
+the same 2,999 MiB MLX peak. In a float32 128³, 30-channel `tanh(x * [1,...,30])` buffer
+probe, the peak fell from 1,976 to 736 MiB with bitwise-equal outputs.
+
+Checks on Apple M5 Max, MLX 0.32.4, `MLX_ENABLE_TF32=0` (November 13, 2026):
+
+| Comparison | Result |
+| --- | --- |
+| Released liver fold 0, four real CT 128³ tiles, pinned PyTorch 2.13.0 / nnU-Net 2.8.1 / architecture 0.4.4 | Maximum logit error 7.35e-5; allclose at rtol=atol=1e-4; zero label disagreements |
+| Full HCC_063 CT, fold 0, 0.5 step, eight mirrored views: previous versus revised MLX mirror accumulation | All 25,952,256 labels identical; per-class Dice 1.0 |
+| Full HCC_063 CT, label-only and saved-probability paths | Both exported and read back on the input grid |
+| Full-case upstream comparison | Pending |
+
+The full-volume equality is an MLX optimization comparison. The four-tile result is
+upstream network agreement. The [qualification workflow](../tests/README.md#full-volume-comparisons)
+records these comparison types separately and reports per-class and component metrics.
+
+The separate HCC_063 annotation comparison selects model class 2 (cancer) and the
+sourced DICOM SEG `Mass` segment. Dice is 0.8183 and predicted volume exceeds the
+annotation by 10.85 mL. Both annotation components overlap the prediction; seven
+candidate components have no annotation overlap, including one at most 100 mm³.
+Label-only and saved-probability outputs give the same result on this case.
+
+Three additional prototypes remain experiments. Timings are synchronized warm medians
+under the shared GPU lock; their local measurements do not estimate whole-case gains.
+
+| Probe | Baseline → prototype | Numerical result | Decision |
+| --- | --- | --- | --- |
+| 1→32, 3³, float32 128³ convolution; direct scalar-channel kernel | 9.91 → 3.24 ms; 767 → 383 MiB MLX peak | Bitwise-equal output on the sourced CT tile | Retain native dispatch pending network integration qualification |
+| Three-class normalization/label reduction, float32 128³; one thread per voxel | 1.02 → 0.22 ms | Equal labels and validity flags; float16/32, half rounding, ties and invalid-value controls also agree | Retain current kernel pending workflow measurement |
+| SIAM fold 0, 256×256×192 forward; asynchronous stage boundaries | 1,060.5 → 1,059.9 ms; 10,206 → 14,466 MiB MLX peak | Bitwise-equal output | Retain synchronous boundaries: similar time with higher memory |

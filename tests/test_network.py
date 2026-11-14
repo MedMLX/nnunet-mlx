@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 from nnunet_reference.arrays import host_array
 
-from nnunet_mlx.model.network import NonOverlappingConvTranspose3d, ResidualEncoderUNet
 from nnunet_mlx.model.topology import ResidualEncoderUNetSpec
 from nnunet_mlx.runtime import import_mlx
 
@@ -23,6 +22,8 @@ def test_intermediate_residual_upsample_repeats_at_cads_shape(
     torch = pytest.importorskip("torch")
     mx, _ = import_mlx()
     spec = replace(tiny_residual_spec, features=(32, 64, 128), encoder_blocks=(1, 1, 1))
+    from nnunet_mlx.model.network import NonOverlappingConvTranspose3d, ResidualEncoderUNet
+
     model = ResidualEncoderUNet(spec)
     layer = cast(NonOverlappingConvTranspose3d, model["up0"])
     source = torch.nn.ConvTranspose3d(128, 64, kernel_size=2, stride=2).eval()

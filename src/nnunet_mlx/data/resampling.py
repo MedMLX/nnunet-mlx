@@ -28,6 +28,17 @@ _PARALLEL_RESIZE_BYTES = 4 << 30
 _RESIZE_THREADS = min(8, os.cpu_count() or 1)
 
 
+def resize_worker_count(count: int, working_set_bytes: int, *, retained_bytes: int = 0) -> int:
+    """Bound concurrent resize jobs by CPU count and estimated float64 working sets.
+
+    The caller retains shared result/intermediate arrays once and reserves the
+    remaining resize budget per job. One job still runs when a single resize is
+    larger than the budget; the budget limits concurrency rather than case size.
+    """
+    available = max(0, _PARALLEL_RESIZE_BYTES - retained_bytes)
+    return max(1, min(count, _RESIZE_THREADS, available // max(1, working_set_bytes)))
+
+
 def compute_new_shape(
     old_shape: Sequence[int],
     old_spacing: Sequence[float],
@@ -114,7 +125,7 @@ def resample_probabilities_or_data(
         result = np.empty((len(values), *target_shape), dtype=output_dtype)
         # Float64 input copy, spline coefficients and output per channel.
         working_set = 16 * values[0].size + 8 * int(np.prod(target_shape))
-        workers = max(1, min(len(values), _RESIZE_THREADS, _PARALLEL_RESIZE_BYTES // working_set))
+        workers = resize_worker_count(len(values), working_set, retained_bytes=result.nbytes)
 
         def resize(index: int) -> None:
             """Resize one channel into its slot of the preallocated result."""
@@ -306,10 +317,12 @@ def _resample_separate_z(
     for channel_index, channel in enumerate(data):
         # Rounding planes before an interpolating out-of-plane pass would round twice.
         intermediate = np.empty(tuple(intermediate_shape), dtype=np.float64)
+        working_set = 16 * (channel.size // source_shape[axis] + int(np.prod(in_plane_shape)))
         _run_indexed(
             partial(_resize_plane_into, channel, intermediate, axis, in_plane_shape, order),
             source_shape[axis],
-            _RESIZE_THREADS,
+            resize_worker_count(source_shape[axis], working_set,
+                                retained_bytes=intermediate.nbytes + result.nbytes),
         )
         result[channel_index] = resize_out_of_plane(
             intermediate,

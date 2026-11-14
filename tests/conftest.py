@@ -19,15 +19,26 @@ from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 
 
 @pytest.fixture
+def controlled_runner_recording() -> UpstreamRecording:
+    """Load tracked head-conversion and rounding operands without sourced images."""
+    return _load_recording("tests/fixtures/darwin-arm64/upstream_runner.npz")
+
+
+@pytest.fixture
 def upstream_runner_recording() -> UpstreamRecording:
-    """Load the pinned upstream reference recorded on darwin-arm64."""
+    """Load the provisioned image-dependent upstream reference."""
+    return _load_recording("work/real-reference/upstream_runner.npz")
+
+
+def _load_recording(relative_path: str) -> UpstreamRecording:
+    """Read a restricted NumPy recording with an actionable missing-asset error."""
     import numpy as np
 
-    path = Path(__file__).resolve().parents[1] / "work/real-reference/upstream_runner.npz"
+    path = Path(__file__).resolve().parents[1] / relative_path
     if not path.is_file():
         pytest.fail(
-            "missing darwin-arm64 upstream fixture; record it on this host with the "
-            "scripts/record_upstream_runner.py"
+            f"missing upstream recording: {relative_path}; "
+            "run python scripts/preflight.py for preparation instructions"
         )
     with np.load(path, allow_pickle=False) as saved:
         metadata = cast(RunnerRecording, json.loads(str(saved["metadata"].item())))

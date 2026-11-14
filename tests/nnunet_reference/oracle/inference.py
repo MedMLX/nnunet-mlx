@@ -17,7 +17,6 @@ import numpy as np
 import numpy.typing as npt
 
 from nnunet_mlx.data.labels import parse_dataset_label_semantics
-from nnunet_mlx.model.network import PlainConvUNet
 from nnunet_mlx.model.topology import PlainConvUNetSpec
 from nnunet_mlx.storage.weights import convert_state_dict, load_converted_state
 from nnunet_reference.oracle.fixtures import (
@@ -191,6 +190,8 @@ def run_sliding_window_parity(
     from nnunet_mlx.prediction.sliding_window import predict_logits
 
     source = build_torch_plain_conv_unet(spec, seed=seed)
+    from nnunet_mlx.model.network import PlainConvUNet
+
     candidate = PlainConvUNet(spec)
     load_converted_state(candidate, convert_state_dict(source.state_dict()))
     values = real_image_input(spatial, spec.input_channels)

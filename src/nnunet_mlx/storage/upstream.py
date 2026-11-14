@@ -54,6 +54,7 @@ from nnunet_mlx.storage.weights import convert_state_dict, load_converted_state
 
 UPSTREAM_CHECKPOINT = "checkpoint_final.pth"
 MLX_CHECKPOINT = "checkpoint_final"
+CONVERSION_CONTRACT_VERSION = 1
 # nnU-Net's own environment variable for trained models; its spelling is upstream's.
 _RESULTS_VARIABLE = "nnUNet_results"
 _INSTALL_HINT = "install the converter with: pip install 'nnunet-mlx[convert]'"
@@ -274,6 +275,9 @@ def convert_trained_model(
             })
         manifest = {
             "schema_version": CONVERSION_SCHEMA,
+            "conversion_contract_version": CONVERSION_CONTRACT_VERSION,
+            "source_plans": source_plans,
+            "source_dataset": dataset_json,
             "engine_version": version("nnunet-mlx"),
             "configuration": configuration,
             "source_profile": DEFAULT_INFERENCE_SOURCE_PROFILE,
@@ -330,8 +334,9 @@ def cached_conversion(
     Conversions live under ``NNUNET_MLX_CACHE`` (default ``~/.cache/nnunet-mlx``) in
     ``converted/<dataset>/<trainer__plans__configuration>``. A conversion is reused
     while it came from the same folder, holds the requested folds, and each source
-    checkpoint keeps its recorded size and modification time; otherwise it is
-    replaced. Every available fold is converted, so later fold selections reuse it.
+    checkpoint keeps its recorded size and modification time, source JSON metadata
+    is unchanged, and all payload files exist. A conversion-contract revision also
+    forces rebuilding. Every available fold is converted for later fold selections.
     """
     # Normalize dot components in the cache name without resolving symlink aliases.
     # A trailing /.. must never become a cache entry passed to rmtree.
@@ -365,12 +370,23 @@ def cached_conversion(
 def _conversion_is_current(
     target: Path, folder: Path, folds: tuple[int | str, ...], checkpoint_name: str
 ) -> bool:
-    """Whether ``target`` converted exactly these source checkpoints as they are now."""
+    """Check source metadata, conversion semantics and expected payload availability."""
     marker = target / ".source"
     if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != str(folder):
         return False
     try:
+        read_conversion_manifest(target)
         manifest = read_json_object(target / CONVERSION_FILENAME)
+        source_plans = read_json_object(folder / "plans.json")
+        source_dataset = read_json_object(folder / "dataset.json")
+        if (
+            manifest.get("conversion_contract_version") != CONVERSION_CONTRACT_VERSION
+            or manifest.get("source_plans") != source_plans
+            or manifest.get("source_dataset") != source_dataset
+            or read_json_object(target / "plans.json") != upgrade_legacy_plans(source_plans)
+            or read_json_object(target / "dataset.json") != source_dataset
+        ):
+            return False
     except ContractError:
         return False
     recorded: dict[object, tuple[object, object, object]] = {}

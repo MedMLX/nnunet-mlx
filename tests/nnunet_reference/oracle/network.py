@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from nnunet_reference.arrays import host_array
 
 if TYPE_CHECKING:
-    pass
+    from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
 
 
 if TYPE_CHECKING:
@@ -23,7 +23,6 @@ from pathlib import Path
 
 import numpy as np
 
-from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 from nnunet_mlx.runtime import import_mlx
 from nnunet_mlx.storage.weights import convert_state_dict, load_converted_state
@@ -105,6 +104,8 @@ def run_forward_parity(
     pretrained checkpoint compatibility nor clinical performance is tested.
     """
     source = build_torch_plain_conv_unet(spec, seed=seed)
+    from nnunet_mlx.model.network import PlainConvUNet
+
     candidate = PlainConvUNet(spec)
     return _run_network_forward_parity(
         source,
@@ -160,6 +161,8 @@ def run_residual_forward_parity(
 ) -> ForwardParityResult:
     """Compare residual-network logits using the same gate as plain UNet."""
     source = build_torch_residual_encoder_unet(spec, seed=seed)
+    from nnunet_mlx.model.network import ResidualEncoderUNet
+
     candidate = ResidualEncoderUNet(spec)
     return _run_network_forward_parity(
         source,
@@ -211,6 +214,8 @@ def _run_network_forward_parity(
 
 def converted_candidate(spec: PlainConvUNetSpec, source: TorchModule) -> PlainConvUNet:
     """Convert and load a source state dict; return the candidate without setting eval mode."""
+    from nnunet_mlx.model.network import PlainConvUNet
+
     candidate = PlainConvUNet(spec)
     load_converted_state(candidate, convert_state_dict(source.state_dict()))
     return candidate
