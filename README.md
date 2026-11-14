@@ -39,30 +39,41 @@ uv pip install "nnunet-mlx>=0.8.0"
 ## Run
 
 ```python
-from nnunet_mlx.named_models import liver
+from nnunet_mlx.named_models.liver import segment
 
-result = liver(image_path="ct.nii.gz", output_dir="out")
+result = segment(image_path="ct.nii.gz", output_dir="out")
 print(result["outputs"]["mask"])
 ```
 
-Without `weights_path`, the runner downloads `MedMLX/nnunet-liver-mlx` into the shared
+Without `weights_path`, `segment` downloads `MedMLX/nnunet-liver-mlx` into the shared
 MedMLX cache on first use; later runs work offline. `medmlx setup nnunet-liver`
 downloads it ahead of time, and a model folder passed as `weights_path` uses your own
 copy.
 
 ### Named models
 
-| MedMLX model | Python runner | Inputs | Weights |
-| --- | --- | --- | --- |
-| `nnunet-liver` | `nnunet_mlx.named_models.liver(image_path=...)` | CT | [MedMLX/nnunet-liver-mlx](https://huggingface.co/MedMLX/nnunet-liver-mlx) |
-| `nnunet-autopet` | `nnunet_mlx.named_models.autopet(image_paths=[ct, pet])` | Co-registered CT and SUV PET, in that order | [MedMLX/nnunet-autopet-mlx](https://huggingface.co/MedMLX/nnunet-autopet-mlx) |
-| `nnunet-pancreas` | `nnunet_mlx.named_models.pancreas(image_path=...)` | CT | [MedMLX/nnunet-pancreas-mlx](https://huggingface.co/MedMLX/nnunet-pancreas-mlx) |
-| `nnunet-brats2021` | `nnunet_mlx.named_models.brats(t1_path=..., t1ce_path=..., t2_path=..., flair_path=...)` | Four co-registered MRI | [MedMLX/nnunet-brats-mlx](https://huggingface.co/MedMLX/nnunet-brats-mlx) |
-| `siam` | `nnunet_mlx.named_models.siam(image_path=...)` | One head MRI of any contrast, or CT | [MedMLX/siam](https://huggingface.co/MedMLX/siam) |
-| `mrsegmentator` | `nnunet_mlx.named_models.mrsegmentator(image_path=..., weights_path=...)` | MRI | Local `weights_path` only |
+Each released model is a module of `nnunet_mlx.named_models` with its own `segment`:
 
-All runners take `output_dir`, `weights_path` and `overwrite`, and return the label map
-as `outputs["mask"]`.
+| MedMLX model | Module | Inputs | Weights |
+| --- | --- | --- | --- |
+| `nnunet-liver` | `liver` | `image_path`: CT | [MedMLX/nnunet-liver-mlx](https://huggingface.co/MedMLX/nnunet-liver-mlx) |
+| `nnunet-autopet` | `autopet` | `image_paths={"ct": ..., "pet": ...}`: co-registered CT and SUV PET | [MedMLX/nnunet-autopet-mlx](https://huggingface.co/MedMLX/nnunet-autopet-mlx) |
+| `nnunet-pancreas` | `pancreas` | `image_path`: CT | [MedMLX/nnunet-pancreas-mlx](https://huggingface.co/MedMLX/nnunet-pancreas-mlx) |
+| `nnunet-brats2021` | `brats` | `image_paths={"t1": ..., "t1ce": ..., "t2": ..., "flair": ...}`: co-registered MRI | [MedMLX/nnunet-brats-mlx](https://huggingface.co/MedMLX/nnunet-brats-mlx) |
+| `siam` | `siam` | `image_path`: one head MRI of any contrast, or CT | [MedMLX/siam](https://huggingface.co/MedMLX/siam) |
+| `mrsegmentator` | `mrsegmentator` | `image_path`: MRI | Local `weights_path` only |
+
+Every `segment` takes `output_dir`, `weights_path` and `overwrite`, and returns the label
+map on the input grid as `outputs["mask"]`, with a `label_map` artifact listing its labels.
+`nnunet_mlx.named_models.liver.load_model()` keeps the liver model loaded for several CTs:
+
+```python
+from nnunet_mlx.named_models.liver import load_model
+
+with load_model() as model:
+    for name in ("a", "b"):
+        model.segment(image_path=f"{name}.nii.gz", output_dir=f"out/{name}")
+```
 
 - **Liver** runs its one fold. Liver and AutoPET take `use_mirroring` and
   `step_fraction`: the released setting runs eight mirrored passes per tile at step
@@ -122,9 +133,11 @@ network, such as `nnUNetTrainerBN`, Primus or custom ones, are rejected.
 
 ### Other model folders
 
-`nnunet_mlx.medmlx.run(weights_path=..., image_paths=[...], output_dir=...)` runs any
-converted MLX model folder within the supported configurations below. Keep the complete
-layout:
+`nnunet_mlx.segment(weights_path=..., image_paths=[...], output_dir=...)` runs any
+converted MLX model folder within the supported configurations below, and
+`nnunet_mlx.load_model(weights_path=..., ...)` loads one for several cases; its
+`segment` takes `image_paths`, `output_dir`, `overwrite` and `save_probabilities`.
+Keep the complete layout:
 
 ```text
 mlx-model/
@@ -139,20 +152,21 @@ mlx-model/
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `weights_path` | required | Model folder root |
-| `image_paths` | required | `.nii` or `.nii.gz` images, one per modality in `dataset.json` channel order |
+| `image_paths` | required | `.nii` or `.nii.gz` images, one per channel in `dataset.json` channel-index order |
 | `output_dir` | required | Output directory; created if missing |
 | `overwrite` | `False` | Replace existing outputs instead of refusing |
 | `configuration` | `3d_fullres` | Plans configuration |
 | `folds` | every numeric fold | Integers to ensemble, or `["all"]` for `fold_all` |
 | `checkpoint_name` | `checkpoint_final` | Checkpoint directory in each fold |
 | `source_profile` | `nnunet-v2.8.1-default` | Compatibility profile, see below |
-| `arithmetic` | `native` | Or `torch-order-fp32`, for the profiles that require it |
+| `precision` | `native` | Or `torch-order-fp32`, for the profiles that require it |
 | `step_fraction` | `0.5` | Sliding-window step, in (0, 1] |
 | `use_mirroring` | `True` | Use the checkpoint's mirroring test-time augmentation |
 | `save_probabilities` | `False` | Also write probabilities and their nnU-Net properties sidecar |
 
-The result is `{"outputs": {...}, "details": {...}}`. `outputs["mask"]` is a label map
-on the input image's grid.
+The result is `{"outputs": {...}, "artifacts": {...}, "details": {...}}`. `outputs["mask"]`
+is a label map on the input image's grid. With `save_probabilities`, `probabilities` and
+`probability_properties` are on nnU-Net's preprocessed grid.
 
 | Error | Raised when |
 | :--- | :--- |
@@ -206,8 +220,8 @@ Models trained with `nnUNetTrainer` or a variant that builds the network from th
 use the default profile. Released models from other trainers need the profile for their
 exact dataset, trainer and configuration, selected with `--source-profile` or
 `source_profile=`. Profiles marked `torch-order-fp32` also need
-`--arithmetic torch-order-fp32`. Loading checks each checkpoint's trainer, configuration
-and plans against the selected profile. Profiles cover inference only, not training or
+`--arithmetic torch-order-fp32`, or `precision="torch-order-fp32"` in Python. Loading
+checks each checkpoint's trainer, configuration and plans against the selected profile. Profiles cover inference only, not training or
 segmentation quality.
 
 | Profile | Architecture | Configuration | Notes |

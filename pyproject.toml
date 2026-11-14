@@ -85,12 +85,12 @@ MedMLX = "https://github.com/MedMLX/medmlx"
 nnunet-mlx = "nnunet_mlx.cli:main"
 
 [project.entry-points."medmlx.models"]
-nnunet-pancreas = "nnunet_mlx.named_models:PANCREAS"
-nnunet-brats2021 = "nnunet_mlx.named_models:BRATS"
-mrsegmentator = "nnunet_mlx.named_models:MRSEGMENTATOR"
-nnunet-liver = "nnunet_mlx.named_models:LIVER"
-nnunet-autopet = "nnunet_mlx.named_models:AUTOPET"
-siam = "nnunet_mlx.named_models:SIAM"
+nnunet-pancreas = "nnunet_mlx.named_models.pancreas:MODEL"
+nnunet-brats2021 = "nnunet_mlx.named_models.brats:MODEL"
+mrsegmentator = "nnunet_mlx.named_models.mrsegmentator:MODEL"
+nnunet-liver = "nnunet_mlx.named_models.liver:MODEL"
+nnunet-autopet = "nnunet_mlx.named_models.autopet:MODEL"
+siam = "nnunet_mlx.named_models.siam:MODEL"
 
 [tool.uv]
 constraint-dependencies = [

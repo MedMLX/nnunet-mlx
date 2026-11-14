@@ -14,6 +14,7 @@ from nnunet_mlx.errors import ContractError
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 
 if TYPE_CHECKING:
+    from nnunet_mlx.medmlx import NnUNetModel, load_model, segment
     from nnunet_mlx.model.folder import ModelBundle, load_model_bundle
     from nnunet_mlx.prediction.nifti import NiftiPrediction
     from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
@@ -27,11 +28,14 @@ __all__ = [
     "ModelBundle",
     "ModelFolderPredictor",
     "NiftiPrediction",
+    "NnUNetModel",
     "PlainConvUNetSpec",
     "ResidualEncoderUNetSpec",
     "convert_trained_model",
+    "load_model",
     "load_model_bundle",
     "read_conversion_manifest",
+    "segment",
 ]
 
 # Execution entry points load on first access so importing the package, the
@@ -41,6 +45,9 @@ _DEFERRED_EXPORTS = {
     "ModelBundle": "nnunet_mlx.model.folder",
     "ModelFolderPredictor": "nnunet_mlx.prediction.pipeline",
     "NiftiPrediction": "nnunet_mlx.prediction.nifti",
+    "NnUNetModel": "nnunet_mlx.medmlx",
+    "load_model": "nnunet_mlx.medmlx",
+    "segment": "nnunet_mlx.medmlx",
     "load_model_bundle": "nnunet_mlx.model.folder",
     "read_conversion_manifest": "nnunet_mlx.storage.conversion",
     "convert_trained_model": "nnunet_mlx.storage.upstream",

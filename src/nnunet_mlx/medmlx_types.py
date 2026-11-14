@@ -1,6 +1,8 @@
-"""Declared MedMLX runner JSON result contracts."""
+"""The JSON result contract of ``segment``."""
 
 from typing import TypedDict
+
+from medmlx_core.outputs import Artifact
 
 
 class RunDetails(TypedDict):
@@ -8,10 +10,9 @@ class RunDetails(TypedDict):
 
     weights_revision: str | None
     labels: list[dict[str, object]]
-    output_kind: str
     configuration: str
     source_profile: str
-    arithmetic: str
+    precision: str
     folds: list[int | str]
     checkpoints: list[dict[str, object]]
     mirroring_axes: list[int]
@@ -25,7 +26,8 @@ class RunDetails(TypedDict):
 
 
 class RunResult(TypedDict):
-    """Represent one MedMLX run: absolute output paths by role and its run details."""
+    """One segmentation: absolute output paths and artifacts by role, and run details."""
 
     outputs: dict[str, str]
+    artifacts: dict[str, Artifact]
     details: RunDetails

@@ -1,11 +1,12 @@
-"""MedMLX runner for converted MLX model folders; named models live in ``named_models``.
+"""``segment`` and ``load_model`` for converted MLX model folders.
 
+The released models in ``nnunet_mlx.named_models`` run through the same path.
 Prediction uses :class:`ModelFolderPredictor` with nnU-Net v2.8.1's
 sliding-window accumulation and checkpoint mirroring; the prediction CLI builds
 the same predictor through :func:`predictor`. Label metadata uses the
 package's shared dataset contract. Importing this module does not initialize MLX.
 
-The runner reports failures as ``medmlx_core`` errors, whose type names reach
+The operation reports failures as ``medmlx_core`` errors, whose type names reach
 MCP clients. Each step re-raises the package's :class:`ContractError` as the
 error for its kind of failure, with the same message and the ``ContractError``
 as ``__cause__``.
@@ -23,6 +24,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Literal, cast
 
+from medmlx_core.files import PathLike
+from medmlx_core.outputs import Artifact, artifact
 from medmlx_core.weights import weights_revision
 
 from nnunet_mlx.contracts import parse_boolean, parse_mapping, parse_number, parse_sequence
@@ -132,25 +135,25 @@ def predictor(bundle: ModelBundle, *, step_fraction: float) -> ModelFolderPredic
 
 
 def check_request(
-    image_paths: Sequence[str],
+    image_paths: Sequence[PathLike],
     *,
-    output_dir: str,
+    output_dir: PathLike,
     overwrite: object = False,
     folds: Sequence[int | str] | None = None,
     source_profile: str | None = None,
-    arithmetic: str = "native",
+    precision: str = "native",
     step_fraction: object = 0.5,
     use_mirroring: object = True,
     save_probabilities: object = False,
 ) -> tuple[list[Path], tuple[int | str, ...] | None]:
     """Check the arguments that need no model folder, before weights are resolved.
 
-    Named runners call this before downloading their model folder, so a typo fails
+    Named models call this before downloading their model folder, so a typo fails
     at once. Returns the image paths and the validated folds.
 
     Raises:
         InvalidInputError: Missing or non-NIfTI images; non-boolean flags; invalid
-            folds, ``step_fraction``, ``arithmetic`` or ``source_profile``; or an
+            folds, ``step_fraction``, ``precision`` or ``source_profile``; or an
             ``output_dir`` that is not a directory.
     """
     from nnunet_mlx.model.metadata import validate_folds
@@ -187,8 +190,8 @@ def check_request(
         step = parse_number(step_fraction, name="step_fraction")
         if not 0 < step <= 1:
             raise ContractError(f"step_fraction must be in (0, 1], got {step_fraction}")
-        if arithmetic not in {"native", TORCH_ORDER_FLOAT32}:
-            raise ContractError(f"unsupported inference arithmetic {arithmetic!r}")
+        if precision not in {"native", TORCH_ORDER_FLOAT32}:
+            raise ContractError(f"unsupported precision {precision!r}")
         if source_profile is not None:
             resolve_inference_source_profile(source_profile)
         output = Path(output_dir).expanduser()
@@ -197,17 +200,17 @@ def check_request(
     return images, selected_folds
 
 
-def run(
+def segment(
     *,
-    weights_path: str,
-    image_paths: Sequence[str],
-    output_dir: str,
+    weights_path: PathLike,
+    image_paths: Sequence[PathLike],
+    output_dir: PathLike,
     overwrite: bool = False,
     configuration: str | None = None,
     folds: Sequence[int | str] | None = None,
     checkpoint_name: str = "checkpoint_final",
     source_profile: str | None = None,
-    arithmetic: str = "native",
+    precision: str = "native",
     step_fraction: float = 0.5,
     use_mirroring: bool = True,
     save_probabilities: bool = False,
@@ -215,16 +218,17 @@ def run(
     """Segment one case and restore the label map to the input image's grid.
 
     Args:
-        weights_path: Local native MLX model folder. Use a named runner for
-            automatic downloads where configured. A folder such as the published
-            ``MedMLX/nnunet-liver-mlx`` bundle contains ``plans.json``,
-            ``dataset.json`` and
+        weights_path: Local native MLX model folder. The released models in
+            ``nnunet_mlx.named_models`` download theirs automatically. A folder
+            such as the published ``MedMLX/nnunet-liver-mlx`` bundle contains
+            ``plans.json``, ``dataset.json`` and
             ``fold_<n>/checkpoint_final/{state.json,weights.safetensors}`` for the
             selected folds. Pass the folder root as ``weights_path``.
             Conversion receipts are optional export metadata, not inference inputs.
-        image_paths: NIfTI images (``.nii`` or ``.nii.gz``), one per modality in
-            ``dataset.json`` channel order. Single-case filenames are unrestricted
-            apart from the NIfTI ending.
+        image_paths: NIfTI images (``.nii`` or ``.nii.gz``), one per channel in
+            ``dataset.json`` channel-index order; released channel names are not
+            unique (AutoPET's are CT and CT), so order identifies the channel.
+            Filenames are unrestricted apart from the NIfTI ending.
         output_dir: Directory for the outputs; created if missing.
         overwrite: Replace existing outputs; input/output aliases are always refused.
         configuration: Plans configuration; defaults to ``3d_fullres``.
@@ -233,7 +237,7 @@ def run(
         checkpoint_name: MLX checkpoint directory inside each fold; defaults to
             ``checkpoint_final``.
         source_profile: Compatibility profile; defaults to the nnU-Net v2.8.1 profile.
-        arithmetic: ``native`` (default), or ``torch-order-fp32`` to run MLX kernels
+        precision: ``native`` (default), or ``torch-order-fp32`` to run MLX kernels
             on Metal in the pinned PyTorch CPU float32 operation order (only for
             the model profiles that admit it).
         step_fraction: Sliding-window step as a fraction of the patch, in (0, 1].
@@ -245,12 +249,15 @@ def run(
         following ``dataset.json``), a label map with the input's shape and
         geometry, and, with ``save_probabilities``, ``probabilities`` and
         ``probability_properties`` to ``probabilities.npz`` and
-        ``probabilities.pkl``. ``details`` holds the label table, output kind,
-        selected options, checkpoint signatures and timings.
+        ``probabilities.pkl``. ``artifacts`` describes the mask as a
+        ``label_map`` (``binary_mask`` for a 0/1 label table) with the
+        checkpoint's labels on the input grid, and the probabilities as a
+        ``scalar_field`` on nnU-Net's preprocessed grid. ``details`` holds the
+        label table, selected options, checkpoint signatures and timings.
 
     Raises:
         InvalidInputError: Missing or non-NIfTI images; non-boolean flags; invalid
-            folds, ``step_fraction``, ``arithmetic`` or ``source_profile``; an
+            folds, ``step_fraction``, ``precision`` or ``source_profile``; an
             ``output_dir`` that is a file; existing outputs without ``overwrite``.
         AssetNotReadyError: A missing model folder, or one whose files,
             configuration, folds or checkpoints are missing, malformed,
@@ -261,32 +268,36 @@ def run(
             including images that do not give the model's channel count.
     """
 
-    return _run(
+    return segment_case(
         weights_path=weights_path, image_paths=image_paths, output_dir=output_dir,
         overwrite=overwrite, configuration=configuration, folds=folds,
-        checkpoint_name=checkpoint_name, source_profile=source_profile, arithmetic=arithmetic,
+        checkpoint_name=checkpoint_name, source_profile=source_profile, precision=precision,
         step_fraction=step_fraction, use_mirroring=use_mirroring,
         save_probabilities=save_probabilities,
     )
 
 
-def _run(
+def segment_case(
     *,
     prepared: _PreparedState | None = None,
-    weights_path: str,
-    image_paths: Sequence[str],
-    output_dir: str,
+    grid_of: str = "image_paths",
+    weights_path: PathLike,
+    image_paths: Sequence[PathLike],
+    output_dir: PathLike,
     overwrite: bool = False,
     configuration: str | None = None,
     folds: Sequence[int | str] | None = None,
     checkpoint_name: str = "checkpoint_final",
     source_profile: str | None = None,
-    arithmetic: str = "native",
+    precision: str = "native",
     step_fraction: float = 0.5,
     use_mirroring: bool = True,
     save_probabilities: bool = False,
 ) -> RunResult:
-    """Run the shared one-shot publication path, optionally using prepared state."""
+    """Segment one case through the shared publication path, optionally with loaded state.
+
+    ``grid_of`` names the caller's input argument whose grid the mask is on.
+    """
     from nnunet_mlx.plans import read_json_object
     from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
 
@@ -296,7 +307,7 @@ def _run(
         overwrite=overwrite,
         folds=folds,
         source_profile=source_profile,
-        arithmetic=arithmetic,
+        precision=precision,
         step_fraction=step_fraction,
         use_mirroring=use_mirroring,
         save_probabilities=save_probabilities,
@@ -358,7 +369,7 @@ def _run(
                 folds=selected_folds,
                 checkpoint_name=checkpoint_name,
                 source_profile=source_profile,
-                arithmetic=arithmetic,
+                arithmetic=precision,
             )
         if not use_mirroring:
             bundle = replace(bundle, mirroring_axes=())
@@ -395,15 +406,27 @@ def _run(
         total_wall_s=perf_counter() - started,
         peak_memory_bytes=int(mx.get_peak_memory()),
     )
+    artifacts: dict[str, Artifact] = {
+        "mask": artifact(
+            kind=output_kind(labels), coordinate_space="image_physical", grid_of=grid_of,
+            labels=[
+                {"value": cast(int, item["value"]), "name": cast(str, item["name"])}
+                for item in labels
+            ],
+        ),
+    }
+    if save_probabilities:
+        # nnU-Net's preprocessed (cropped, resampled) grid, which is not written.
+        artifacts["probabilities"] = artifact(kind="scalar_field", coordinate_space="unresolved")
     payload: RunResult = {
         "outputs": {role: path.resolve().as_posix() for role, path in targets.items()},
+        "artifacts": artifacts,
         "details": {
             "weights_revision": weights_revision(folder),
             "labels": labels,
-            "output_kind": output_kind(labels),
             "configuration": configuration,
             "source_profile": source_profile,
-            "arithmetic": arithmetic,
+            "precision": precision,
             "folds": list(bundle.folds),
             "checkpoints": [item.to_payload() for item in bundle.checkpoints],
             "mirroring_axes": list(bundle.mirroring_axes),
@@ -455,29 +478,30 @@ class _Preparation:
     folds: tuple[int | str, ...] | None
     checkpoint_name: str
     source_profile: str
-    arithmetic: str
+    precision: str
     step_fraction: float
     use_mirroring: bool
 
 
-class PreparedModel:
-    """One fixed model/configuration reused for serial cases until explicitly closed.
+class NnUNetModel:
+    """One loaded model and configuration reused for serial cases until closed.
 
-    Model files must remain unchanged for the cohort. Metadata signatures detect
-    ordinary replacements/edits before each case; start a new preparation after
-    changing weights or configuration. Inputs, predictions and output staging
-    belong to each call, and no per-case tensor is stored on this object.
-    Per-case ``model_load_s`` is zero; ``peak_memory_bytes`` covers preparation
-    through that case rather than resetting the MLX peak between cases.
+    :meth:`segment` has the :func:`segment` contract for the per-case arguments.
+    Model files must remain unchanged while loaded. Metadata signatures detect
+    ordinary replacements/edits before each case; load again after changing
+    weights or configuration. Inputs, predictions and output staging belong to
+    each call, and no per-case tensor is stored on this object. Per-case
+    ``model_load_s`` is zero; ``peak_memory_bytes`` covers loading through that
+    case rather than resetting the MLX peak between cases.
     """
 
     def __init__(
-        self, *, weights_path: str, configuration: str = "3d_fullres",
+        self, *, weights_path: PathLike, configuration: str = "3d_fullres",
         folds: Sequence[int | str] | None = None, checkpoint_name: str = "checkpoint_final",
-        source_profile: str | None = None, arithmetic: str = "native",
+        source_profile: str | None = None, precision: str = "native",
         step_fraction: float = 0.5, use_mirroring: bool = True,
     ) -> None:
-        """Load and bind the selected model once; case destinations are supplied to run."""
+        """Load and bind the selected model once; cases are supplied to :meth:`segment`."""
         from nnunet_mlx.model.folder import load_model_bundle
         from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
         from nnunet_mlx.runtime import import_mlx, runtime_info
@@ -486,7 +510,7 @@ class PreparedModel:
             Path(weights_path).expanduser().absolute(), configuration,
             None if folds is None else tuple(folds), checkpoint_name,
             DEFAULT_INFERENCE_SOURCE_PROFILE if source_profile is None else source_profile,
-            arithmetic, step_fraction, use_mirroring,
+            precision, step_fraction, use_mirroring,
         )
         options = self._options
         with _reported_as("input"):
@@ -505,50 +529,77 @@ class PreparedModel:
             bundle = load_model_bundle(
                 options.folder, configuration=configuration, folds=options.folds,
                 checkpoint_name=checkpoint_name, source_profile=options.source_profile,
-                arithmetic=arithmetic,
+                arithmetic=precision,
             )
             if _source_signature(options.folder, checkpoint_name) != self._signature:
-                raise ContractError("Model files changed during preparation; prepare again")
+                raise ContractError("Model files changed while loading; load the model again")
         if not use_mirroring:
             bundle = replace(bundle, mirroring_axes=())
         self._state: _PreparedState | None = _PreparedState(
             bundle, predictor(bundle, step_fraction=step_fraction))
 
-    def run(
-        self, *, image_paths: Sequence[str], output_dir: str,
+    def segment(
+        self, *, image_paths: Sequence[PathLike], output_dir: PathLike,
         overwrite: bool = False, save_probabilities: bool = False,
     ) -> RunResult:
-        """Run one case with the one-shot runner's geometry and publication checks."""
+        """Segment one case with the one-shot geometry and publication checks."""
+        return self.segment_case(
+            image_paths=image_paths, output_dir=output_dir, overwrite=overwrite,
+            save_probabilities=save_probabilities,
+        )
+
+    def segment_case(
+        self, *, image_paths: Sequence[PathLike], output_dir: PathLike, overwrite: bool,
+        save_probabilities: bool = False, grid_of: str = "image_paths",
+    ) -> RunResult:
+        """Segment one case; ``grid_of`` names the caller's input argument for the mask grid.
+
+        Raises:
+            RuntimeError: The model is closed.
+        """
         options = self._options
         state = self._state
         if state is None:
-            raise RuntimeError("Prepared model is closed")
+            raise RuntimeError("nnU-Net model is closed")
         with _reported_as("asset"):
             if _source_signature(options.folder, options.checkpoint_name) != self._signature:
-                raise ContractError("Model files changed after preparation; prepare again")
-        return _run(
-            prepared=state, weights_path=str(options.folder), image_paths=image_paths,
+                raise ContractError("Model files changed after loading; load the model again")
+        return segment_case(
+            prepared=state, grid_of=grid_of, weights_path=options.folder,
+            image_paths=image_paths,
             output_dir=output_dir, overwrite=overwrite, save_probabilities=save_probabilities,
             configuration=options.configuration, folds=options.folds,
             checkpoint_name=options.checkpoint_name,
-            source_profile=options.source_profile, arithmetic=options.arithmetic,
+            source_profile=options.source_profile, precision=options.precision,
             step_fraction=options.step_fraction, use_mirroring=options.use_mirroring,
         )
 
     def close(self) -> None:
-        """Release model ownership; subsequent case calls are rejected."""
+        """Release the model; later :meth:`segment` calls raise ``RuntimeError``."""
         self._state = None
 
+    def __enter__(self) -> NnUNetModel:
+        """Return this model for a ``with`` block that closes it on exit."""
+        return self
 
-def prepare(
-    *, weights_path: str, configuration: str = "3d_fullres",
+    def __exit__(self, *args: object) -> None:
+        """Close the model."""
+        self.close()
+
+
+def load_model(
+    *, weights_path: PathLike, configuration: str = "3d_fullres",
     folds: Sequence[int | str] | None = None, checkpoint_name: str = "checkpoint_final",
-    source_profile: str | None = None, arithmetic: str = "native", step_fraction: float = 0.5,
+    source_profile: str | None = None, precision: str = "native", step_fraction: float = 0.5,
     use_mirroring: bool = True,
-) -> PreparedModel:
-    """Prepare a fixed nnU-Net model for an explicitly bounded, serial cohort."""
-    return PreparedModel(
+) -> NnUNetModel:
+    """Load a converted model folder once to segment several cases.
+
+    The arguments mean what they mean in :func:`segment`; the returned model's
+    ``segment`` takes the per-case ones. Close it, or use it as a context manager.
+    """
+    return NnUNetModel(
         weights_path=weights_path, configuration=configuration, folds=folds,
-        checkpoint_name=checkpoint_name, source_profile=source_profile, arithmetic=arithmetic,
+        checkpoint_name=checkpoint_name, source_profile=source_profile, precision=precision,
         step_fraction=step_fraction, use_mirroring=use_mirroring,
     )

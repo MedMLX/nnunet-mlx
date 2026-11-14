@@ -1,4 +1,4 @@
-"""Upstream label semantics and request rejection for the registered MedMLX runners."""
+"""Upstream label semantics and request rejection for the released models."""
 
 from __future__ import annotations
 
@@ -7,11 +7,13 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 
+import medmlx_core.weights as core_weights
 import pytest
 from medmlx_core.errors import InvalidInputError
 
-from nnunet_mlx import medmlx, named_models
+from nnunet_mlx import medmlx
 from nnunet_mlx.errors import ContractError
+from nnunet_mlx.named_models import autopet, brats, liver, mrsegmentator, pancreas
 
 pytestmark = pytest.mark.host
 
@@ -22,11 +24,11 @@ LABEL_FIXTURE = json.loads(
 LABEL_CASES = cast(list[dict[str, object]], LABEL_FIXTURE["cases"])
 
 RUNNERS: dict[str, Callable[..., object]] = {
-    "liver": named_models.liver,
-    "autopet": named_models.autopet,
-    "pancreas": named_models.pancreas,
-    "brats": named_models.brats,
-    "mrsegmentator": named_models.mrsegmentator,
+    "liver": liver.segment,
+    "autopet": autopet.segment,
+    "pancreas": pancreas.segment,
+    "brats": brats.segment,
+    "mrsegmentator": mrsegmentator.segment,
 }
 # One case per rejection category; the categories a runner has no argument for are absent.
 REJECTIONS: dict[str, dict[str, dict[str, object]]] = {
@@ -77,11 +79,11 @@ def test_runner_rejects_bad_requests(
 ) -> None:
     """Reject each category of bad request; omitted weights are never downloaded first."""
 
-    def download(model_id: str) -> Path:
+    def download(model_id: str, **_options: object) -> Path:
         """Fail if a runner reaches its weights download before rejecting the request."""
         raise AssertionError(f"downloaded {model_id} before rejecting {category}")
 
-    monkeypatch.setattr(named_models, "weights_dir", download)
+    monkeypatch.setattr(core_weights, "weights_dir", download)
     for name in ("case_0000.nii.gz", "case_0000.png"):
         (tmp_path / name).write_bytes(b"not read")
     arguments = dict(changes)
@@ -90,9 +92,9 @@ def test_runner_rejects_bad_requests(
     output = tmp_path / "out"
     arguments["output_dir"] = str(output)
     if runner == "autopet":
-        arguments["image_paths"] = [image] * count
+        arguments["image_paths"] = dict(zip(autopet.CHANNELS, [image] * count, strict=False))
     elif runner == "brats":
-        arguments.update({f"{role}_path": image for role in ("flair", "t1", "t1ce", "t2")})
+        arguments["image_paths"] = dict.fromkeys(brats.CHANNELS, image)
     else:
         arguments["image_path"] = image
     if arguments.pop("existing", False):
