@@ -234,22 +234,22 @@ def region_or_label_to_mask(segmentation: IntArray, region_or_label: LabelOrRegi
 def remove_all_but_largest_component(binary_image: BoolArray) -> BoolArray:
     """``acvl_utils.morphology.morphology_helper.remove_all_but_largest_component``.
 
-    Full connectivity (every neighboring axis and diagonal), matching
+    Keep every component tied for largest size, with full connectivity
+    (26 neighbors in 3D), matching
     ``skimage.measure.label``'s ``connectivity=None`` default, which is the
     undecorated call upstream's postprocessing makes. An all-background mask
-    (no component to keep) is a no-op: an all-``False`` result, as upstream's
-    ``max()`` over an empty size list is never evaluated by its short-circuited
-    list comprehension.
+    returns an all-``False`` result.
     """
 
     structure = ndimage.generate_binary_structure(binary_image.ndim, binary_image.ndim)
-    labeled, count = ndimage.label(binary_image, structure=structure)
+    labels, count = ndimage.label(binary_image, structure=structure)
     if count == 0:
         return np.zeros_like(binary_image, dtype=np.bool_)
-    sizes = ndimage.sum_labels(binary_image, labeled, index=np.arange(1, count + 1))
-    largest = sizes.max()
-    keep_labels = np.flatnonzero(sizes == largest) + 1
-    return np.isin(labeled, keep_labels)
+    sizes = np.bincount(labels.reshape(-1), minlength=count + 1)
+    sizes[0] = 0
+    keep = sizes == sizes.max()
+    keep[0] = False
+    return keep[labels]
 
 
 def remove_all_but_largest_component_from_segmentation(
