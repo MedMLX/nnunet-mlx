@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 type HostArray = npt.NDArray[np.generic]
 type FloatArray = npt.NDArray[np.float32]
+type InputArray = HostArray | array
 type LogitArray = npt.NDArray[np.float16] | npt.NDArray[np.float32]
 
 _MIRROR_OUTPUT_BUDGET_BYTES = 256 * 1024**2
@@ -114,7 +115,7 @@ def nnunet_fp16_gaussian(patch_size: tuple[int, ...]) -> npt.NDArray[np.float16]
 
 def predict_logits(
     model: PredictionModel,
-    data_channels_first: HostArray,
+    data_channels_first: InputArray,
     *,
     patch_size: Sequence[int],
     num_classes: int,
@@ -127,7 +128,7 @@ def predict_logits(
     Args:
         model: Callable mapping a channels-last tile ``(1, *patch, C_in)`` to float32
             ``(1, *patch, num_classes)`` logits.
-        data_channels_first: Finite float32 ``(C_in, *spatial)`` input, 2-D or 3-D,
+        data_channels_first: Host or MLX finite float32 ``(C_in, *spatial)`` input, 2-D or 3-D,
             in the plans' axis order.
         patch_size: Patch shape in the same axis order as ``spatial``.
         num_classes: Number of output channels of ``model``.
@@ -156,7 +157,7 @@ def predict_logits(
 
 def predict_host_logits(
     model: PredictionModel,
-    data_channels_first: HostArray,
+    data_channels_first: InputArray,
     *,
     patch_size: Sequence[int],
     num_classes: int,
@@ -217,7 +218,7 @@ def predict_host_logits(
 
 def predict_device_logits(
     model: PredictionModel,
-    data_channels_first: HostArray,
+    data_channels_first: InputArray,
     *,
     patch_size: Sequence[int],
     num_classes: int,
@@ -259,7 +260,7 @@ def predict_device_logits(
 
 def add_fold_device_logits(
     model: PredictionModel,
-    data_channels_first: HostArray,
+    data_channels_first: InputArray,
     total: array,
     *,
     patch_size: Sequence[int],
@@ -310,7 +311,7 @@ def add_fold_device_logits(
 
 def predict_labels(
     model: PredictionModel,
-    data_channels_first: FloatArray,
+    data_channels_first: InputArray,
     *,
     patch_size: Sequence[int],
     num_classes: int,
@@ -357,7 +358,7 @@ def predict_labels(
 
 def _accumulate_logits(
     model: PredictionModel,
-    padded: HostArray,
+    padded: InputArray,
     *,
     patch: tuple[int, ...],
     axes: tuple[int, ...],
@@ -394,7 +395,9 @@ def _accumulate_logits(
     weights = nnunet_fp16_gaussian(patch) if upstream_fp16 else gaussian_importance(patch)
     gaussian = mx.array(weights)[..., None]
     gaussian_float32 = gaussian.astype(mx.float32)
-    volume = mx.array(np.transpose(padded, (*range(1, padded.ndim), 0)))
+    permutation = (*range(1, padded.ndim), 0)
+    volume = (mx.array(np.transpose(padded, permutation))
+              if isinstance(padded, np.ndarray) else mx.transpose(padded, permutation))
     starts = list(product(*steps))
     tiles = [
         tuple(slice(start, start + size) for start, size in zip(offsets, patch, strict=True))
@@ -458,18 +461,19 @@ def _accumulate_logits(
 
 
 def _validate_request(
-    data: HostArray,
+    data: InputArray,
     patch_size: Sequence[int],
     num_classes: int,
     mirroring_axes: Sequence[int],
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Validate float32 data, patch dimensions, classes and mirroring axes."""
     spatial_dims = data.ndim - 1
-    if (
-        data.dtype != np.dtype(np.float32)
-        or spatial_dims not in (2, 3)
-        or not np.isfinite(data).all()
-    ):
+    if isinstance(data, np.ndarray):
+        valid = data.dtype == np.dtype(np.float32) and bool(np.isfinite(data).all())
+    else:
+        mx, _ = import_mlx()
+        valid = data.dtype == mx.float32 and bool(mx.all(mx.isfinite(data)).item())
+    if not valid or spatial_dims not in (2, 3):
         raise ContractError(f"expected finite float32 (C,*spatial) 2-D/3-D input, got {data.shape}")
     patch = tuple(int(value) for value in patch_size)
     if len(patch) != spatial_dims or any(value < 1 for value in patch):
@@ -536,12 +540,12 @@ def _validate_prediction(
 
 
 def _pad_minimum(
-    data: HostArray,
+    data: InputArray,
     patch: tuple[int, ...],
-) -> tuple[HostArray, tuple[slice, ...]]:
+) -> tuple[InputArray, tuple[slice, ...]]:
     # Zero-pad axes shorter than the patch, with the odd voxel after, as upstream's
     # ``pad_nd_image``; the returned slices crop the padding back off.
-    """Zero-pad undersized spatial axes and return slices that remove the padding."""
+    """Zero-pad spatial axes on the input backend and return slices that undo it."""
     padding: list[tuple[int, int]] = [(0, 0)]
     crop: list[slice] = []
     for size, minimum in zip(data.shape[1:], patch, strict=True):
@@ -549,6 +553,10 @@ def _pad_minimum(
         before = total // 2
         padding.append((before, total - before))
         crop.append(slice(before, before + size))
-    padded = (np.pad(data, padding, mode="constant", constant_values=0)
-              if any(before or after for before, after in padding) else np.ascontiguousarray(data))
+    needs_padding = any(before or after for before, after in padding)
+    if isinstance(data, np.ndarray):
+        padded = np.pad(data, padding) if needs_padding else np.ascontiguousarray(data)
+    else:
+        mx, _ = import_mlx()
+        padded = mx.pad(data, padding) if needs_padding else mx.contiguous(data)
     return padded, tuple(crop)

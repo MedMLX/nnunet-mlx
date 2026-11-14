@@ -9,7 +9,7 @@ import numpy as np
 import numpy.typing as npt
 
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.prediction.sliding_window import predict_host_logits
+from nnunet_mlx.prediction.sliding_window import InputArray, predict_host_logits
 from nnunet_mlx.runtime import validate_inference_execution
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ type LogitArray = npt.NDArray[np.float16] | npt.NDArray[np.float32]
 
 def average_fold_logits(
     models: Sequence[PredictionModel],
-    data_channels_first: HostArray,
+    data_channels_first: InputArray,
     *,
     patch_size: Sequence[int],
     num_outputs: int,
@@ -36,7 +36,7 @@ def average_fold_logits(
 
     Args:
         models: One callable per fold, each mapping a channels-last tile to logits.
-        data_channels_first: Finite float32 preprocessed ``(C, *spatial)`` data in the
+        data_channels_first: Host or MLX finite float32 preprocessed ``(C, *spatial)`` data in the
             plans' axis order.
         patch_size: Patch shape. With two entries, ``(C, S, H, W)`` data runs
             slice by slice along ``S`` and ``(C, H, W)`` data runs directly.
@@ -59,7 +59,7 @@ def average_fold_logits(
     if not models:
         raise ContractError("fold inference requires at least one model")
     patch = tuple(int(value) for value in patch_size)
-    data = np.asarray(data_channels_first)
+    data = data_channels_first
     upstream_fp16 = accumulation == "nnunet-fp16"
     total: HostArray | None = None
     for model in models:
@@ -92,7 +92,7 @@ def average_fold_logits(
 
 def average_fold_device_logits(
     models: Sequence[PredictionModel],
-    data_channels_first: HostArray,
+    data_channels_first: InputArray,
     *,
     patch_size: Sequence[int],
     num_outputs: int,
@@ -118,7 +118,7 @@ def average_fold_device_logits(
     if len(patch_size) != 3:
         raise ContractError("device fold averaging requires a three-dimensional patch")
     mx, _ = import_mlx()
-    data = np.asarray(data_channels_first)
+    data = data_channels_first
     total: array | None = None
     for model in models:
         if total is None:
@@ -164,7 +164,7 @@ def device_logits_to_host(logits: array) -> LogitArray:
 
 def _predict_model_logits(
     model: PredictionModel,
-    data: HostArray,
+    data: InputArray,
     *,
     patch_size: tuple[int, ...],
     num_outputs: int,
@@ -312,7 +312,7 @@ class ArrayPredictor:
         self.step_fraction = step_fraction
         self.accumulation = accumulation
 
-    def predict_logits_from_preprocessed_data(self, data_channels_first: HostArray) -> LogitArray:
+    def predict_logits_from_preprocessed_data(self, data_channels_first: InputArray) -> LogitArray:
         """Return fold-averaged host logits ``(num_outputs, *spatial)``, float16 for nnunet-fp16."""
         return average_fold_logits(
             self.models,
@@ -324,7 +324,9 @@ class ArrayPredictor:
             accumulation=self.accumulation,
         )
 
-    def predict_device_logits_from_preprocessed_data(self, data_channels_first: HostArray) -> array:
+    def predict_device_logits_from_preprocessed_data(
+        self, data_channels_first: InputArray,
+    ) -> array:
         """Return fold-averaged logits left on Metal, channels-last ``(*spatial, C)`` (3-D only)."""
         return average_fold_device_logits(
             self.models,

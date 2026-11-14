@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module
-from typing import cast
+from typing import TYPE_CHECKING, Literal, cast, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -19,23 +19,43 @@ from nnunet_mlx.data.resampling import (
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.plans import PlansContract
 
+if TYPE_CHECKING:
+    from mlx.core import array
+
 type FloatArray = npt.NDArray[np.float32]
 type HostArray = npt.NDArray[np.generic]
 
 
 @dataclass(frozen=True, slots=True)
-class PreprocessedRawCase:
+class PreprocessedRawCase[T = FloatArray]:
     """Preprocessed raw case: ``data`` (C, X, Y, Z) float32 in the plans' axis order and spacing.
 
+    ``data`` stays on the host by default. With ``prefer_mlx``, changed-shape
+    Torch resampling returns an MLX array for device padding and tiling.
     ``previous_stage`` is the resampled cascade label map (1, X, Y, Z), or ``None``.
     ``properties`` extends the input properties with ``shape_before_cropping``,
     ``bbox_used_for_cropping`` and ``shape_after_cropping_and_before_resampling``,
     all in the plans' axis order, which restoration needs to invert the crop.
     """
 
-    data: FloatArray
+    data: T
     previous_stage: HostArray | None
     properties: dict[str, object]
+
+
+@overload
+def preprocess_raw_case(
+    data: npt.NDArray[np.generic], properties: Mapping[str, object], plans: PlansContract,
+    *, segmentation_previous_stage: HostArray | None = None,
+    prefer_mlx: Literal[False] = False,
+) -> PreprocessedRawCase[FloatArray]: ...
+
+
+@overload
+def preprocess_raw_case(
+    data: npt.NDArray[np.generic], properties: Mapping[str, object], plans: PlansContract,
+    *, segmentation_previous_stage: HostArray | None = None, prefer_mlx: bool,
+) -> PreprocessedRawCase[FloatArray] | PreprocessedRawCase[array]: ...
 
 
 def preprocess_raw_case(
@@ -44,7 +64,8 @@ def preprocess_raw_case(
     plans: PlansContract,
     *,
     segmentation_previous_stage: HostArray | None = None,
-) -> PreprocessedRawCase:
+    prefer_mlx: bool = False,
+) -> PreprocessedRawCase[FloatArray] | PreprocessedRawCase[array]:
     """Apply transpose, nonzero crop, normalization, and plan resampling.
 
     Follows upstream's ``DefaultPreprocessor.run_case_npy`` step order.
@@ -59,6 +80,8 @@ def preprocess_raw_case(
             the same axis order as ``data``'s spatial axes (before the transpose).
         plans: Parsed plans for the selected configuration. Null spacing entries
             keep this image's spacing on those axes after transposition.
+        prefer_mlx: Retain changed-shape Torch resampling results on Metal,
+            including cascade cases; other paths return host data.
         segmentation_previous_stage: Cascade input, (1, X, Y, Z) non-negative
             integer labels representable in int32, in the same axis order as ``data``.
 
@@ -118,6 +141,7 @@ def preprocess_raw_case(
         original_spacing,
         target_spacing,
         configuration.data_resampling,
+        prefer_mlx=prefer_mlx,
     )
     resampled_previous = (
         None
@@ -130,6 +154,8 @@ def preprocess_raw_case(
             configuration.segmentation_resampling,
         )
     )
+    if not isinstance(resampled, np.ndarray):
+        return PreprocessedRawCase(resampled, resampled_previous, result_properties)
     return PreprocessedRawCase(
         data=resampled,
         previous_stage=resampled_previous,

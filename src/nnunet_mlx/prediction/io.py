@@ -14,6 +14,7 @@ from nnunet_mlx.data.preprocessing import labelmap_to_one_hot, preprocess_raw_ca
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.plans import PlansContract
 from nnunet_mlx.prediction.export import ExportedFiles, export_prediction, restore_prediction
+from nnunet_mlx.prediction.sliding_window import InputArray
 from nnunet_mlx.storage.imageio import (
     image_reader_input_sidecars,
     read_images,
@@ -29,9 +30,10 @@ class PreparedPredictionInput:
     Channels are the preprocessed image modalities followed, for cascade models, by
     one one-hot channel per foreground label of the previous stage. ``properties``
     carries the geometry and crop records needed to restore the prediction.
+    Direct prediction may retain resampled MLX data; process workers return NumPy.
     """
 
-    data: npt.NDArray[np.float32]
+    data: InputArray
     properties: dict[str, object]
 
 
@@ -82,8 +84,11 @@ def prepare_prediction_input(
     semantics: LabelSemantics,
     previous_stage_file: str | Path | None,
     max_output_bytes: int | None = None,
+    prefer_mlx: bool = False,
 ) -> PreparedPredictionInput:
-    """Read and preprocess one raw case without initializing MLX.
+    """Read and preprocess one raw case, optionally retaining resampling on Metal.
+
+    Process-pool callers leave ``prefer_mlx=False`` to return host payloads.
 
     ``max_output_bytes`` bounds the size of the returned array (for process-pool
     workers); exceeding it raises ``ContractError``. Cascade models need
@@ -106,17 +111,19 @@ def prepare_prediction_input(
         properties,
         plans,
         segmentation_previous_stage=previous_stage,
+        prefer_mlx=prefer_mlx,
     )
     network_input = preprocessed.data
     if preprocessed.previous_stage is not None:
         one_hot = labelmap_to_one_hot(preprocessed.previous_stage[0], semantics.all_labels)
-        network_input = np.concatenate((network_input, one_hot))
+        network_input = np.concatenate((np.asarray(network_input), one_hot))
     if max_output_bytes is not None and network_input.nbytes > max_output_bytes:
         raise ContractError(
             "preprocessed case exceeds worker byte allowance; increase max-inflight-bytes"
         )
     return PreparedPredictionInput(
-        data=np.ascontiguousarray(network_input, dtype=np.float32),
+        data=(np.ascontiguousarray(network_input, dtype=np.float32)
+              if isinstance(network_input, np.ndarray) else network_input),
         properties=preprocessed.properties,
     )
 

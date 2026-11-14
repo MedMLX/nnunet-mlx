@@ -80,7 +80,7 @@ def test_torch_resampling_matches_selected_source(
         np.testing.assert_array_equal(actual, expected)
         assert actual.dtype == values.dtype
     else:
-        # FP32 sampling coordinates, with SciPy rather than ATen accumulation.
+        # FP32 sampling coordinates and compensated SciPy-style accumulation.
         np.testing.assert_allclose(
             np.asarray(actual, dtype=np.float32), expected, rtol=1e-5, atol=5e-6
         )
@@ -88,10 +88,12 @@ def test_torch_resampling_matches_selected_source(
     assert actual.flags.c_contiguous
 
 
+@pytest.mark.parametrize("prefer_mlx", [False, True])
 @pytest.mark.parametrize("case", PIPELINE, ids=[row["name"] for row in PIPELINE])
 def test_torch_plan_preprocessing_cascade_and_restoration(
     recording: dict[str, NumericArray],
     case: PipelineCase,
+    prefer_mlx: bool,
 ) -> None:
     """Check source-style preprocessing, cascade labels and restoration together."""
     original = copy.deepcopy(case["plans"])
@@ -101,9 +103,17 @@ def test_torch_plan_preprocessing_cascade_and_restoration(
         case["properties"],
         plans,
         segmentation_previous_stage=recording["previous"],
+        prefer_mlx=prefer_mlx,
     )
     key = case["name"]
-    np.testing.assert_allclose(prepared.data, recording[f"{key}-processed"], rtol=1e-5, atol=5e-6)
+    if (prefer_mlx and prepared.data.shape[1:]
+            != prepared.properties["shape_after_cropping_and_before_resampling"]):
+        import mlx.core as mx
+
+        assert isinstance(prepared.data, mx.array)
+    np.testing.assert_allclose(
+        np.asarray(prepared.data), recording[f"{key}-processed"], rtol=1e-5, atol=5e-6,
+    )
     np.testing.assert_array_equal(prepared.previous_stage, recording[f"{key}-labels"])
     for field, value in case["geometry"].items():
         np.testing.assert_array_equal(prepared.properties[field], value)
@@ -170,3 +180,37 @@ def test_torch_parallel_restoration_does_not_use_spline_plane_shortcut(
         _contract(case["kwargs"]),
     )
     np.testing.assert_array_equal(actual, recording["parallel_expected"].argmax(axis=0))
+
+
+@pytest.mark.metal
+@pytest.mark.parametrize("magnitude", [1.0, float(np.finfo(np.float32).max), 1e-40])
+def test_torch_linear_metal_preserves_float32_range(magnitude: float) -> None:
+    """Protect finite extremes, subnormals and irregular half-pixel rounding."""
+    import mlx.core as mx
+    from scipy.ndimage import map_coordinates
+
+    # A strided input exercises packing; opposite signs also exercise cancellation.
+    values = np.random.default_rng(7).uniform(-1, 1, (2, 7, 5, 3)).astype(np.float32)
+    values[0] = 1
+    values *= np.float32(magnitude)
+    values = values.transpose(0, 3, 2, 1)
+    # Cross dispatch rows and leave a partial final row.
+    target = (33, 35, 37)
+    coordinates = np.asarray(np.meshgrid(*(
+        np.maximum(np.float32(old / new) * (np.arange(new, dtype=np.float32) + 0.5) - 0.5, 0)
+        for old, new in zip(values.shape[1:], target, strict=True)
+    ), indexing="ij"), dtype=np.float32)
+    expected = np.stack([
+        map_coordinates(channel, coordinates, order=1, mode="nearest", prefilter=False)
+        for channel in values
+    ])
+    actual = resample_probabilities_or_data(
+        values, target, (1, 1, 1), (1, 1, 1),
+        _contract({"is_seg": False, "mode": "linear", "force_separate_z": False}),
+        prefer_mlx=True,
+    )
+    assert isinstance(actual, mx.array)
+    assert actual.dtype == mx.float32
+    # Subnormal storage and the constant maximum must survive exactly.
+    np.testing.assert_array_equal(np.asarray(actual, dtype=np.float32)[0], expected[0])
+    np.testing.assert_allclose(np.asarray(actual, dtype=np.float32), expected, rtol=1e-5, atol=5e-6)

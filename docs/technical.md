@@ -214,6 +214,42 @@ whole-volume resampling, the bulk of preprocessing for one CT, is unchanged. Wit
 `nnunet-fp16` accumulation, host logits stay float16 from the sliding window
 through fold averaging instead of passing through a float32 volume.
 
+## Torch-grid resampling on Metal
+
+`resample_torch_fornnunet` calculates sampling coordinates inside each Metal
+thread. It preserves the float32 half-pixel multiply/subtract order, replicated
+edges, nearest and nearest-exact modes, and scale-1000 float16 label scores with
+the selected tie rule. Label candidates come from the interpolation stencil;
+there are no full-volume coordinate, indicator or label-score buffers.
+Separate-axis passes retain their intermediate arrays on Metal. Preprocessing
+with `prefer_mlx=True` also retains the final image for prediction.
+
+The kernel reuses compensated float32 products for SciPy-style accumulation.
+Power-of-two scaling protects finite extremes, and integer mantissa handling
+preserves subnormal storage. MLX 0.32.4's built-in `Upsample` uses a different
+coordinate expression and intermediate rounding, and does not supply the
+nearest-exact and label-selection contract used here.
+
+On Apple M5 Max, macOS 27.2, MLX 0.32.4, NumPy 2.5.4 and SciPy 1.18.1
+(November 14, 2026), one float32 HCC_063 CT channel cropped to 128×128×48
+and divided by 1024 was linearly resampled to 512³. The public NumPy-to-NumPy
+resampling call includes transfers and finite-value validation. Six paired fresh
+processes each ran one cold and one subsequent warm call, with device startup
+outside the measured call. Medians were:
+
+| Metric | Previous SciPy Torch-grid path | Metal Torch-grid path |
+| --- | ---: | ---: |
+| Peak added process footprint | 3,073.59 MiB | 661.42 MiB |
+| Cold call | 3,232.42 ms | 163.45 ms |
+| Warm call | 3,106.89 ms | 23.73 ms |
+
+Peak added footprint fell 78.48%. All 134,217,728 output values in this volume
+were bitwise equal. Nine smaller image/precision cases met the existing
+`rtol=1e-5, atol=5e-6` criterion (largest absolute error 7.45e-9), and 45 label
+cases covering all three interpolation and tie modes across five integer dtypes
+were exact. The 125 recorded-upstream, pipeline and precision checks also passed.
+These measurements cover resampling, including its host boundary.
+
 ## Converting trained models
 
 `nnunet-mlx convert` and `nnunet-mlx predict` read upstream `checkpoint_final.pth`

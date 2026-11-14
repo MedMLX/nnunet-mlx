@@ -35,7 +35,7 @@ from nnunet_mlx.prediction.inference import (
     logits_to_probabilities,
     probabilities_to_segmentation,
 )
-from nnunet_mlx.prediction.sliding_window import predict_labels
+from nnunet_mlx.prediction.sliding_window import InputArray, predict_labels
 from nnunet_mlx.storage.imageio import (
     image_reader_output_sidecar,
     read_segmentation,
@@ -264,7 +264,7 @@ def _restore_probability_chunks(
 
 def predict_same_grid_segmentation(
     predictor: ArrayPredictor,
-    data: npt.NDArray[np.float32],
+    data: InputArray,
     properties: Mapping[str, object],
     plans: PlansContract,
     semantics: LabelSemantics,

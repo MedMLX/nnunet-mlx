@@ -1,4 +1,4 @@
-"""Torch-free nnU-Net v2 spline and torch-style host resampling."""
+"""Torch-free nnU-Net v2 spline and Metal Torch-grid resampling."""
 
 from __future__ import annotations
 
@@ -7,14 +7,18 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from importlib import import_module
-from typing import cast
+from typing import TYPE_CHECKING, Literal, cast, overload
 
 import numpy as np
 import numpy.typing as npt
 
 from nnunet_mlx.contracts import parse_number
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.plans import InterpolationMode, ResamplingContract, SegmentationTieBreak
+from nnunet_mlx.plans import ResamplingContract, SegmentationTieBreak
+
+if TYPE_CHECKING:
+    from mlx.core import array
+
 
 type FloatArray = npt.NDArray[np.float32]
 type HostArray = npt.NDArray[np.generic]
@@ -64,18 +68,37 @@ def compute_new_shape(
     )
 
 
+@overload
+def resample_probabilities_or_data(
+    data: npt.NDArray[np.generic], new_shape: Sequence[int],
+    current_spacing: Sequence[float], new_spacing: Sequence[float],
+    contract: ResamplingContract, *, prefer_mlx: Literal[False] = False,
+) -> FloatArray: ...
+
+
+@overload
+def resample_probabilities_or_data(
+    data: npt.NDArray[np.generic], new_shape: Sequence[int],
+    current_spacing: Sequence[float], new_spacing: Sequence[float],
+    contract: ResamplingContract, *, prefer_mlx: bool,
+) -> FloatArray | array: ...
+
+
 def resample_probabilities_or_data(
     data: npt.NDArray[np.generic],
     new_shape: Sequence[int],
     current_spacing: Sequence[float],
     new_spacing: Sequence[float],
     contract: ResamplingContract,
-) -> FloatArray:
+    *, prefer_mlx: bool = False,
+) -> FloatArray | array:
     """Resample finite floating ``(C, X, Y, Z)`` data to a contiguous float32 array.
 
     Spacing and the plan's separate-axis policy choose whole-volume or separate-axis
     interpolation. No anti-aliasing is applied; an unchanged shape still casts to FP32.
     The function name selects spline interpolation or the Torch sampling grid.
+    With ``prefer_mlx``, changed-shape Torch plans retain their result on Metal;
+    other paths return host arrays.
     A cast or interpolation producing non-finite values raises ``ContractError``.
 
     Spline interpolation is computed in float64 and rounded once to the input's
@@ -109,7 +132,17 @@ def resample_probabilities_or_data(
     )
     output_dtype = np.float16 if values.dtype == np.float16 else np.float32
     if contract.function_name == "resample_torch_fornnunet":
-        result = _resample_torch(values, target_shape, axis=axis, contract=contract, is_seg=False)
+        device_result = _resample_torch(
+            values, target_shape, axis=axis, contract=contract, is_seg=False,
+        )
+        if prefer_mlx:
+            from nnunet_mlx.runtime import import_mlx
+
+            mx, _ = import_mlx()
+            if not bool(mx.all(mx.isfinite(device_result)).item()):
+                raise ContractError("resampling produced non-finite values")
+            return device_result
+        result = np.asarray(device_result, dtype=np.float32)
     elif separate_z:
         if axis is None:
             raise AssertionError("separate-z resampling unexpectedly lacks an axis")
@@ -183,7 +216,10 @@ def resample_segmentation(
         threshold=contract.separate_z_anisotropy_threshold,
     )
     if contract.function_name == "resample_torch_fornnunet":
-        result = _resample_torch(values, target_shape, axis=axis, contract=contract, is_seg=True)
+        result = np.asarray(
+            _resample_torch(values, target_shape, axis=axis, contract=contract, is_seg=True),
+            dtype=values.dtype,
+        )
     elif separate_z:
         if axis is None:
             raise AssertionError("separate-z resampling unexpectedly lacks an axis")
@@ -211,8 +247,8 @@ def resample_segmentation(
 def _resample_torch(
     data: HostArray, shape: tuple[int, int, int], *, axis: int | None,
     contract: ResamplingContract, is_seg: bool,
-) -> HostArray:
-    """Apply the 17cb295 torch resampler's passes using host interpolation.
+) -> array:
+    """Apply the 17cb295 Torch resampler and retain its samples on Metal.
 
     In the separate-axis path each source plane becomes a channel, exactly as
     upstream's rearrange does. Label decisions are made between the two passes.
@@ -222,74 +258,11 @@ def _resample_torch(
             data = np.asarray(data, dtype=np.float32)
         if not np.isfinite(data).all():
             raise ContractError("resampling requires values representable as finite float32")
-    tiebreak = contract.seg_tiebreak or "nearest"
-    if axis is None:
-        return _torch_resize(data, shape, contract.mode, is_seg=is_seg, tiebreak=tiebreak)
-    planes = np.moveaxis(data, axis + 1, 1)
-    plane_shape = tuple(shape[index] for index in range(3) if index != axis)
-    resized = _torch_resize(
-        planes.reshape(-1, *planes.shape[2:]), plane_shape, contract.mode,
-        is_seg=is_seg, tiebreak=tiebreak,
-    )
-    intermediate = np.moveaxis(resized.reshape(*planes.shape[:2], *plane_shape), 1, axis + 1)
-    return _torch_resize(intermediate, shape, contract.aniso_axis_mode,
-                         is_seg=is_seg, tiebreak=tiebreak)
+    from nnunet_mlx.kernels.metal_torch_resample import resample_torch
+    from nnunet_mlx.runtime import import_mlx
 
-
-def _torch_resize(
-    data: HostArray, shape: tuple[int, ...], mode: InterpolationMode, *,
-    is_seg: bool, tiebreak: SegmentationTieBreak,
-) -> HostArray:
-    """Resize CXY/CXYZ arrays with half-pixel linear or Torch nearest sampling.
-
-    SciPy supplies the interpolation kernel; float32 coordinates reproduce
-    Torch's size-based align_corners=False grid. No antialiasing or clipping of
-    interpolated image values is applied. Label dtype is retained by our API.
-    """
-    if data.shape[1:] == shape:
-        return data
-    if mode != "linear":
-        result = data
-        for axis, (old, new) in enumerate(zip(data.shape[1:], shape, strict=True), start=1):
-            offset = 0.5 if mode == "nearest-exact" else 0.0
-            indices = np.floor(np.float32(old / new) *
-                               (np.arange(new, dtype=np.float32) + offset)).astype(np.intp)
-            result = np.take(result, np.minimum(indices, old - 1), axis=axis)
-        return result
-    coordinates = np.asarray(np.meshgrid(*(
-        np.maximum(np.float32(old / new) * (np.arange(new, dtype=np.float32) + 0.5) - 0.5, 0)
-        for old, new in zip(data.shape[1:], shape, strict=True)
-    ), indexing="ij"), dtype=np.float32)
-
-    def interpolate(values: HostArray) -> FloatArray:
-        """Interpolate each channel on the precomputed half-pixel coordinate grid."""
-        return np.stack([
-            np.asarray(_map_coordinates()(np.asarray(channel, dtype=np.float32), coordinates,
-                                          order=1, mode="nearest", prefilter=False),
-                       dtype=np.float32)
-            for channel in values
-        ])
-
-    if not is_seg:
-        return interpolate(data)
-    # Both upstream memory modes compare these quantized scores, not the original
-    # FP32 indicators. Retaining that rounding is essential for near-tie labels.
-    best = np.full((len(data), *shape), -np.inf, dtype=np.float32)
-    result = np.zeros(best.shape, dtype=data.dtype)
-    nearest = (_torch_resize(data, shape, "nearest-exact", is_seg=True, tiebreak=tiebreak)
-               if tiebreak == "nearest" else None)
-    nearest_score = np.full(best.shape, -np.inf, dtype=np.float32)
-    for label in np.unique(data):
-        scores = interpolate((data == label).astype(np.float32) * 1000)
-        scores = scores.astype(np.float16).astype(np.float32)
-        better = scores >= best if tiebreak == "highest" else scores > best
-        np.copyto(result, label, where=better)
-        np.maximum(best, scores, out=best)
-        if nearest is not None:
-            np.copyto(nearest_score, scores, where=nearest == label)
-    if nearest is not None:
-        np.copyto(result, nearest, where=nearest_score == best)
-    return result
+    mx, _ = import_mlx()
+    return resample_torch(mx.array(data), shape, axis=axis, contract=contract, is_seg=is_seg)
 
 
 def _resample_separate_z(

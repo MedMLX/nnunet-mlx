@@ -20,6 +20,7 @@ from nnunet_mlx.prediction.export import (
     restore_prediction,
 )
 from nnunet_mlx.prediction.inference import device_logits_to_host
+from nnunet_mlx.prediction.sliding_window import InputArray
 from nnunet_mlx.storage.imageio import label_dtype, resolve_image_reader
 
 if TYPE_CHECKING:
@@ -110,7 +111,7 @@ def _predict_nifti(
     properties: dict[str, object] = {"spacing": spacing}
     if return_probabilities:
         properties.update(_reader_geometry(image, active, reader))
-    prepared = preprocess_raw_case(data, properties, bundle.plans)
+    prepared = preprocess_raw_case(data, properties, bundle.plans, prefer_mlx=True)
     probabilities = None
     if return_probabilities:
         logits = runner.predict_logits_from_preprocessed_data(prepared.data)
@@ -151,7 +152,7 @@ def _predict_nifti(
 
 def _restored_ensemble_labels(
     predictor: ModelFolderPredictor,
-    data: npt.NDArray[np.float32],
+    data: InputArray,
     properties: dict[str, object],
 ) -> npt.NDArray[np.uint16]:
     """Average folds and restore labels on Metal, or on the host when the kernel declines."""

@@ -672,6 +672,7 @@ class ModelFolderPredictor:
             semantics=self.bundle.semantics,
             previous_stage_file=previous_stage_file,
             max_output_bytes=max_output_bytes,
+            prefer_mlx=True,
         )
 
     def _submit_preparation(
