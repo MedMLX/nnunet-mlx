@@ -283,11 +283,15 @@ Checks on Apple M5 Max, MLX 0.32.4, `MLX_ENABLE_TF32=0` (November 13, 2026):
 | Released liver fold 0, four real CT 128³ tiles, pinned PyTorch 2.13.0 / nnU-Net 2.8.1 / architecture 0.4.4 | Maximum logit error 7.35e-5; allclose at rtol=atol=1e-4; zero label disagreements |
 | Full HCC_063 CT, fold 0, 0.5 step, eight mirrored views: previous versus revised MLX mirror accumulation | All 25,952,256 labels identical; per-class Dice 1.0 |
 | Full HCC_063 CT, label-only and saved-probability paths | Both exported and read back on the input grid |
-| Full-case upstream comparison | Pending |
+| Full HCC_063 CT versus the pinned CPU predictor, fold 0, 0.5 step, eight mirrored views, each output mode | All 25,952,256 labels identical; liver and cancer Dice 1.0 |
+| Full HCC_063 saved probabilities versus the pinned CPU predictor | Maximum absolute difference 9.40e-4; mean absolute difference 6.87e-10 |
+| SIAM five-fold full-head T1 (5,898,240 voxels) and isotropic glioma T1 (8,928,000 voxels), output handling | Both decoding modes give identical labels per case; source grids preserved; named-runner LPS reorientation is exact |
 
-The full-volume equality is an MLX optimization comparison. The four-tile result is
-upstream network agreement. The [qualification workflow](../tests/README.md#full-volume-comparisons)
-records these comparison types separately and reports per-class and component metrics.
+The previous-versus-revised MLX row measures an optimization regression. The pinned
+CPU rows measure upstream agreement. The current SIAM checks cover exported grids
+and reorientation; their new full-volume CPU comparisons remain pending. The
+[qualification workflow](../tests/README.md#full-volume-comparisons) records comparison
+types separately and reports per-class and component metrics.
 
 The separate HCC_063 annotation comparison selects model class 2 (cancer) and the
 sourced DICOM SEG `Mass` segment. Dice is 0.8183 and predicted volume exceeds the
