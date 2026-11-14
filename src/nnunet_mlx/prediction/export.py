@@ -10,7 +10,7 @@ import tempfile
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from itertools import product
 from math import prod
 from pathlib import Path
@@ -673,12 +673,18 @@ def file_signature(path: Path) -> list[int]:
     return [metadata.st_size, metadata.st_mtime_ns]
 
 
-def _execution_provenance() -> dict[str, str]:
-    # Audit metadata does not invalidate semantically equivalent predictions.
-    """Record package, MLX and Python versions for the prediction receipt."""
+def _execution_provenance() -> dict[str, str | None]:
+    """Record versions, with null MLX metadata for host-only export environments.
+
+    This descriptive metadata does not invalidate semantically equivalent predictions.
+    """
+    try:
+        mlx_version = version("mlx")
+    except PackageNotFoundError:
+        mlx_version = None
     return {
         "package_version": __version__,
-        "mlx_distribution_version": version("mlx"),
+        "mlx_distribution_version": mlx_version,
         "python_version": platform.python_version(),
     }
 

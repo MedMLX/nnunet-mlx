@@ -18,6 +18,34 @@ from nnunet_mlx.prediction.export import RestoredPrediction, export_prediction
 pytestmark = pytest.mark.host
 
 
+def test_host_export_without_mlx_distribution_records_absent_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host-only publication works when the optional Metal runtime is not installed."""
+    import json
+    from importlib import metadata
+
+    from nnunet_mlx.prediction.export import prediction_is_complete
+
+    installed = metadata.distribution
+
+    def without_mlx(package: str) -> metadata.Distribution:
+        if package == "mlx":
+            raise metadata.PackageNotFoundError(package)
+        return installed(package)
+
+    monkeypatch.setattr(metadata, "distribution", without_mlx)
+    output = tmp_path / "case"
+    files = export_prediction(
+        RestoredPrediction(np.zeros((2, 3, 4), dtype=np.uint16), None),
+        {"spacing": (1, 1, 1), "nibabel_stuff": {"original_affine": np.eye(4)}},
+        output, file_ending=".nii.gz", image_reader_writer="NibabelIO", overwrite=False,
+    )
+    assert prediction_is_complete(output, files, {})
+    receipt = json.loads((tmp_path / "case.complete.json").read_text())
+    assert receipt["execution_provenance"]["mlx_distribution_version"] is None
+
+
 def test_cascade_normalization_preserves_foreground_and_caller_array(
     tiny_model_plans: dict[str, object],
 ) -> None:
