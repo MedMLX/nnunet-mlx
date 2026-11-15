@@ -17,21 +17,22 @@ pytestmark = pytest.mark.host
 REVISION = "574a9c601b9b1a9e906ce985fbd46b106c5b7caa"
 
 
-@pytest.mark.parametrize(("model_id", "repo"), [
-    ("nnunet-liver", "MedMLX--nnunet-liver-mlx"),
-    ("nnunet-autopet", "MedMLX--nnunet-autopet-mlx"),
-    ("nnunet-pancreas", "MedMLX--nnunet-pancreas-mlx"),
-    ("nnunet-brats2021", "MedMLX--nnunet-brats-mlx"),
+# Each model's pinned Hub commit; a cache marked with another commit is not complete.
+@pytest.mark.parametrize(("model_id", "repo", "revision"), [
+    ("nnunet-liver", "MedMLX--nnunet-liver-mlx", REVISION),
+    ("nnunet-autopet", "MedMLX--nnunet-autopet-mlx", "459d23802ae289be0f6539d40ca70c7facb1a9de"),
+    ("nnunet-pancreas", "MedMLX--nnunet-pancreas-mlx", "b2d5f14bb31f9793e3d9ab2c24096427eea983ae"),
+    ("nnunet-brats2021", "MedMLX--nnunet-brats-mlx", "7632a1f3c74d350eb6f2daeb35b43b75ef7601bd"),
 ])
 def test_download_reuses_the_selected_model_cache_offline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-    model_id: str, repo: str,
+    model_id: str, repo: str, revision: str,
 ) -> None:
     """Both output formats identify the requested completed bundle without network IO."""
     monkeypatch.setenv("MEDMLX_ASSET_CACHE", str(tmp_path))
     folder = tmp_path / model_id / repo
     folder.mkdir(parents=True)
-    (folder / ".medmlx-revision").write_text(REVISION + "\n", encoding="utf-8")
+    (folder / ".medmlx-revision").write_text(revision + "\n", encoding="utf-8")
 
     def offline() -> None:
         raise AssertionError("a completed cache must not contact the Hub")
@@ -40,7 +41,7 @@ def test_download_reuses_the_selected_model_cache_offline(
     assert main(["download", model_id, "--json"]) == 0
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {
-        "model_id": model_id, "weights_path": str(folder), "weights_revision": REVISION,
+        "model_id": model_id, "weights_path": str(folder), "weights_revision": revision,
     }
     assert main(["download", model_id]) == 0
     assert capsys.readouterr().out == str(folder) + "\n"
@@ -49,10 +50,14 @@ def test_download_reuses_the_selected_model_cache_offline(
 @dataclass(frozen=True)
 class HubModelInfo:
     sha: str = REVISION
+    # No file metadata: a partial cache cannot be adopted, so a retry downloads.
+    siblings: tuple[object, ...] = ()
 
 
 class HubApi:
-    def model_info(self, repo_id: str) -> HubModelInfo:
+    def model_info(
+        self, repo_id: str, *, revision: str | None = None, files_metadata: bool = False,
+    ) -> HubModelInfo:
         assert repo_id == "MedMLX/nnunet-liver-mlx"
         return HubModelInfo()
 
@@ -68,7 +73,7 @@ def test_download_reports_interruptions_and_records_only_a_completed_retry(
 
     def snapshot_download(
         repo_id: str, *, revision: str, local_dir: Path, force_download: bool,
-        tqdm_class: type[object],
+        tqdm_class: type[object], allow_patterns: list[str] | None = None,
     ) -> str:
         assert repo_id == "MedMLX/nnunet-liver-mlx"
         assert revision == REVISION
