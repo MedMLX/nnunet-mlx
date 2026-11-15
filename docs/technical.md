@@ -110,6 +110,75 @@ trailing data. A released `postprocessing.pkl` may hold one payload up to 1 MiB 
 the one supported upstream postprocessing function. These checks cover structure, not
 provenance.
 
+## CT normalization experiment (removed)
+
+CT normalization uses NumPy clipping, subtraction and division before resampling.
+An experimental no-resampling route retained normalization, padding and patch
+extraction in MLX. It was removed because the complete-prediction comparison
+below found no reliable end-to-end benefit.
+
+The experiment supported CT-only, non-cascade cases whose target shape matched
+the cropped input. Validated parameters were passed per channel as a float32
+array containing `[lower, upper, mean, max(std, 1e-8)]`. One compiled function
+specialized on input shape and dtype, with statistics kept as explicit inputs.
+Padding used normalized zero, as in the host path.
+
+Measured on 13 November 2026 with Apple M5 Max (128 GB), macOS 27.2, Python
+3.13.18 and MLX 0.32.4 on Metal. HCC-TACE HCC-063 CT supplied 25,952,256
+float32 voxels. Liver checkpoint statistics were lower -15 HU, upper 197 HU,
+mean 99.48019 HU and standard deviation 37.138412 HU. Six paired fresh-process
+rounds used synchronized outputs, 0.1 s discarded warmup and 12 timed calls for
+arithmetic or 10 for preprocessing. Metal startup was warmed separately;
+first calls include shape compilation, while imports and input loading are excluded.
+
+| Operation | First call (ms) | Warm median (ms) | Peak added process memory (MB) |
+| --- | ---: | ---: | ---: |
+| NumPy CT arithmetic | 17.56 | 21.51 | 99.1 |
+| Eager MLX CT arithmetic, device inputs | 47.14 | 1.74 | 111.7 |
+| Compiled MLX CT arithmetic, device inputs | 45.93 | 0.56 | 210.3 |
+| Host preprocessing plus MLX upload | 58.85 | 65.77 | 198.2 |
+| Preprocessing with compiled MLX normalization | 129.38 | 23.66 | 309.9 |
+
+The preprocessing comparison assigned model-grid spacing to the source array to
+isolate the no-resampling route. Both arithmetic and full preprocessing matched
+NumPy exactly across all 25,952,256 values. A separate real HU crop of shape
+`(1, 32, 64, 64)`, padded to the liver checkpoint's 128³ patch, produced identical
+final logits and labels with fold 0, mirroring disabled and nnU-Net float16
+accumulation. Additional parity checks covered overlapping 2-D/3-D tiles,
+padding, mirroring, two folds and the standard-deviation floor against pinned
+nnU-Net 2.8.1. The compiled variant improved warmed preprocessing while
+increasing first-call latency and process memory for this workload.
+
+### Complete prediction on three real CT volumes
+
+A follow-up on 14 November 2026 used six paired runs on the same Mac and runtime,
+with liver fold 0, 128³ patches, step fraction 0.5, float32 network arithmetic,
+float16 accumulation, model compilation disabled and mirroring disabled. Timings
+include file reading through segmentation export, with model loading excluded.
+Each fresh process predicted the three cases in table order, so the first case
+includes network startup and later cases introduce new normalization shapes.
+
+The inputs were full CT volumes resampled once, outside the timed prediction,
+using linear interpolation of raw HU onto the released model's grid:
+`(1.0, 0.767578125, 0.767578125)` mm in ZYX order. Both routes received identical
+files. All five inspected native CT scans required resampling and were
+ineligible for the experimental normalization route; the comparison measures
+already-model-grid inputs.
+
+| Case | Shape (Z, Y, X) | Tiles | Host median (s) | MLX median (s) |
+| --- | --- | ---: | ---: | ---: |
+| MSD Pancreas 052 | 222 × 430 × 430 | 108 | 15.56 | 15.03 |
+| HCC-TACE HCC-063 | 248 × 573 × 573 | 192 | 26.78 | 29.17 |
+| AMOS22 0013 | 410 × 521 × 521 | 384 | 54.12 | 58.08 |
+
+Preprocessing-stage medians fell by 34–81 ms. Total-time paired ratio intervals
+were 0.832–1.056, 0.945–1.172 and 0.960–1.201 respectively (96.875% paired-sign
+intervals, six pairs, 2% practical noise threshold). Every interval includes no
+change, so the runs establish neither a reliable speedup nor a regression.
+Peak resident memory was flat: 5630 MiB for the host route and 5637 MiB for MLX.
+Saved labels and affines matched exactly for all cases, with nonempty foreground
+and the input geometry preserved.
+
 ## Liver 3d_fullres inference speed (Apple M5 Max, MLX 0.32.4)
 
 Measured on an Apple M5 Max (40-core GPU, 128 GB) with MLX 0.32.4 on Metal,
