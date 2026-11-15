@@ -24,11 +24,11 @@ LABEL_FIXTURE = json.loads(
 LABEL_CASES = cast(list[dict[str, object]], LABEL_FIXTURE["cases"])
 
 RUNNERS: dict[str, Callable[..., object]] = {
-    "liver": liver.segment,
-    "autopet": autopet.segment,
-    "pancreas": pancreas.segment,
-    "brats": brats.segment,
-    "mrsegmentator": mrsegmentator.segment,
+    "liver": liver.run,
+    "autopet": autopet.run,
+    "pancreas": pancreas.run,
+    "brats": brats.run,
+    "mrsegmentator": mrsegmentator.run,
 }
 # One case per rejection category; the categories a runner has no argument for are absent.
 REJECTIONS: dict[str, dict[str, dict[str, object]]] = {

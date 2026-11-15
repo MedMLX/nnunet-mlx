@@ -15,12 +15,12 @@ from nnunet_mlx.named_models import READINESS, segment_folder
 MODEL = {
     "id": "mrsegmentator", "label": "MRSegmentator", "task": "segmentation",
     "readiness": READINESS,
-    "run": "nnunet_mlx.named_models.mrsegmentator:segment",
+    "run": "nnunet_mlx.named_models.mrsegmentator:run",
     "summary": "MRSegmentator 1.2 base weights with native Metal execution.",
 }
 
 
-def segment(
+def run(
     *, image_path: PathLike, output_dir: PathLike, weights_path: PathLike | None = None,
     overwrite: bool = False, fast: bool = False, fold: int | None = None,
 ) -> RunResult:

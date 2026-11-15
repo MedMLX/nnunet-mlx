@@ -15,7 +15,7 @@ from nnunet_mlx.named_models import READINESS, segment_folder
 MODEL = {
     "id": "nnunet-brats2021", "label": "nnU-Net BraTS 2021", "task": "segmentation",
     "readiness": READINESS,
-    "run": "nnunet_mlx.named_models.brats:segment",
+    "run": "nnunet_mlx.named_models.brats:run",
     # Measured MLX peak for a 240x240x155 four-sequence MRI; larger inputs need more.
     "peak_memory_gb": 7.5,
     "summary": "Zenodo 11582627 Dataset002_BRATS19 with its original BAMF labels.",
@@ -26,7 +26,7 @@ MODEL = {
 CHANNELS = ("t1", "t1ce", "t2", "flair")
 
 
-def segment(
+def run(
     *, image_paths: Mapping[str, PathLike], output_dir: PathLike,
     weights_path: PathLike | None = None, overwrite: bool = False, fold: int | None = None,
     use_mirroring: bool = True,

@@ -39,20 +39,20 @@ uv pip install "nnunet-mlx>=0.8.0"
 ## Run
 
 ```python
-from nnunet_mlx.named_models.liver import segment
+from nnunet_mlx.named_models.liver import run
 
-result = segment(image_path="ct.nii.gz", output_dir="out")
+result = run(image_path="ct.nii.gz", output_dir="out")
 print(result["outputs"]["mask"])
 ```
 
-Without `weights_path`, `segment` downloads `MedMLX/nnunet-liver-mlx` into the shared
+Without `weights_path`, `run` downloads `MedMLX/nnunet-liver-mlx` into the shared
 MedMLX cache on first use; later runs work offline. `medmlx setup nnunet-liver`
 downloads it ahead of time, and a model folder passed as `weights_path` uses your own
 copy.
 
 ### Named models
 
-Each released model is a module of `nnunet_mlx.named_models` with its own `segment`:
+Each released model is a module of `nnunet_mlx.named_models` with its own `run`:
 
 | MedMLX model | Module | Inputs | Weights |
 | --- | --- | --- | --- |
@@ -63,7 +63,7 @@ Each released model is a module of `nnunet_mlx.named_models` with its own `segme
 | `siam` | `siam` | `image_path`: one head MRI of any contrast, or CT | [MedMLX/siam](https://huggingface.co/MedMLX/siam) |
 | `mrsegmentator` | `mrsegmentator` | `image_path`: MRI | Local `weights_path` only |
 
-Every `segment` takes `output_dir`, `weights_path` and `overwrite`, and returns the label
+Every `run` takes `output_dir`, `weights_path` and `overwrite`, and returns the label
 map on the input grid as `outputs["mask"]`, with a `label_map` artifact listing its labels.
 `nnunet_mlx.named_models.liver.load_model()` keeps the liver model loaded for several CTs:
 
@@ -72,7 +72,7 @@ from nnunet_mlx.named_models.liver import load_model
 
 with load_model() as model:
     for name in ("a", "b"):
-        model.segment(image_path=f"{name}.nii.gz", output_dir=f"out/{name}")
+        model.run(image_path=f"{name}.nii.gz", output_dir=f"out/{name}")
 ```
 
 - **Liver** runs its one fold. Liver and AutoPET take `use_mirroring` and
@@ -133,10 +133,10 @@ network, such as `nnUNetTrainerBN`, Primus or custom ones, are rejected.
 
 ### Other model folders
 
-`nnunet_mlx.segment(weights_path=..., image_paths=[...], output_dir=...)` runs any
+`nnunet_mlx.run(weights_path=..., image_paths=[...], output_dir=...)` runs any
 converted MLX model folder within the supported configurations below, and
 `nnunet_mlx.load_model(weights_path=..., ...)` loads one for several cases; its
-`segment` takes `image_paths`, `output_dir`, `overwrite` and `save_probabilities`.
+`run` takes `image_paths`, `output_dir`, `overwrite` and `save_probabilities`.
 Keep the complete layout:
 
 ```text

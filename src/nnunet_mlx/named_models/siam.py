@@ -18,7 +18,7 @@ from nnunet_mlx.prediction.source import SIAM_SOURCE_PROFILE
 MODEL = {
     "id": "siam", "label": "SIAM head tissue segmentation", "task": "segmentation",
     "readiness": READINESS,
-    "run": "nnunet_mlx.named_models.siam:segment",
+    "run": "nnunet_mlx.named_models.siam:run",
     "summary": "Contrast-agnostic full-head tissue segmentation of one MRI or CT volume "
                "(SIAM v0.3, with an anomaly label).",
     # Measured MLX peak for a full-head T1 (five folds, 20 tiles, M5 Max); grows with FOV.
@@ -31,7 +31,7 @@ MODEL = {
 }
 
 
-def segment(
+def run(
     *, image_path: PathLike, output_dir: PathLike, weights_path: PathLike | None = None,
     overwrite: bool = False, voxel_size: float | None = None, fold: int | None = None,
 ) -> RunResult:

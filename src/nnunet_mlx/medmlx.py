@@ -1,4 +1,4 @@
-"""``segment`` and ``load_model`` for converted MLX model folders.
+"""``run`` and ``load_model`` for converted MLX model folders.
 
 The released models in ``nnunet_mlx.named_models`` run through the same path.
 Prediction uses :class:`ModelFolderPredictor` with nnU-Net v2.8.1's
@@ -200,7 +200,7 @@ def check_request(
     return images, selected_folds
 
 
-def segment(
+def run(
     *,
     weights_path: PathLike,
     image_paths: Sequence[PathLike],
@@ -486,7 +486,7 @@ class _Preparation:
 class NnUNetModel:
     """One loaded model and configuration reused for serial cases until closed.
 
-    :meth:`segment` has the :func:`segment` contract for the per-case arguments.
+    :meth:`run` has the :func:`run` contract for the per-case arguments.
     Model files must remain unchanged while loaded. Metadata signatures detect
     ordinary replacements/edits before each case; load again after changing
     weights or configuration. Inputs, predictions and output staging belong to
@@ -501,7 +501,7 @@ class NnUNetModel:
         source_profile: str | None = None, precision: str = "native",
         step_fraction: float = 0.5, use_mirroring: bool = True,
     ) -> None:
-        """Load and bind the selected model once; cases are supplied to :meth:`segment`."""
+        """Load and bind the selected model once; cases are supplied to :meth:`run`."""
         from nnunet_mlx.model.folder import load_model_bundle
         from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
         from nnunet_mlx.runtime import import_mlx, runtime_info
@@ -538,7 +538,7 @@ class NnUNetModel:
         self._state: _PreparedState | None = _PreparedState(
             bundle, predictor(bundle, step_fraction=step_fraction))
 
-    def segment(
+    def run(
         self, *, image_paths: Sequence[PathLike], output_dir: PathLike,
         overwrite: bool = False, save_probabilities: bool = False,
     ) -> RunResult:
@@ -575,7 +575,7 @@ class NnUNetModel:
         )
 
     def close(self) -> None:
-        """Release the model; later :meth:`segment` calls raise ``RuntimeError``."""
+        """Release the model; later :meth:`run` calls raise ``RuntimeError``."""
         self._state = None
 
     def __enter__(self) -> NnUNetModel:
@@ -595,8 +595,8 @@ def load_model(
 ) -> NnUNetModel:
     """Load a converted model folder once to segment several cases.
 
-    The arguments mean what they mean in :func:`segment`; the returned model's
-    ``segment`` takes the per-case ones. Close it, or use it as a context manager.
+    The arguments mean what they mean in :func:`run`; the returned model's
+    ``run`` takes the per-case ones. Close it, or use it as a context manager.
     """
     return NnUNetModel(
         weights_path=weights_path, configuration=configuration, folds=folds,

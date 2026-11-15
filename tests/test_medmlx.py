@@ -154,7 +154,7 @@ def test_liver_runner_writes_label_map_on_the_input_grid(
     """Run the registered liver runner end to end and write labels on the input grid."""
     folder, source = case
     output = tmp_path / "out"
-    result = liver.segment(
+    result = liver.run(
         image_path=str(source), output_dir=str(output), weights_path=str(folder)
     )
 
@@ -178,10 +178,10 @@ def test_runner_mask_only_overwrite_removes_previous_probabilities(
     """A new mask-only generation cannot retain probabilities of an older mask."""
     folder, source = case
     output = tmp_path / "out"
-    medmlx.segment(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output),
+    medmlx.run(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output),
                save_probabilities=True)
     assert (output / "probabilities.npz").is_file()
-    medmlx.segment(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output),
+    medmlx.run(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output),
                overwrite=True, save_probabilities=False)
     assert not (output / "probabilities.npz").exists()
     assert not (output / "probabilities.pkl").exists()
@@ -210,7 +210,7 @@ def test_runner_does_not_clobber_destination_created_during_prediction(
 
     monkeypatch.setattr(ModelFolderPredictor, "predict_case", raced)
     with pytest.raises(ModelExecutionError):
-        medmlx.segment(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output))
+        medmlx.run(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output))
     assert target.read_bytes() == b"concurrent writer"
 
 
@@ -292,7 +292,7 @@ def test_loaded_liver_model_matches_isolated_cases_and_bounds_model_memory(
     from nnunet_mlx.model import folder as model_folder
 
     folder, source = case
-    isolated = liver.segment(
+    isolated = liver.run(
         image_path=str(source), output_dir=str(tmp_path / "isolated"), weights_path=str(folder))
     expected = nib.load(isolated["outputs"]["mask"])
     loads = 0
@@ -314,7 +314,7 @@ def test_loaded_liver_model_matches_isolated_cases_and_bounds_model_memory(
     active: list[int] = []
     try:
         for index in range(24):
-            result = prepared.segment(
+            result = prepared.run(
                 image_path=str(source), output_dir=str(tmp_path / f"case{index}")
             )
             actual = nib.load(result["outputs"]["mask"])
@@ -322,16 +322,16 @@ def test_loaded_liver_model_matches_isolated_cases_and_bounds_model_memory(
             np.testing.assert_array_equal(actual.affine, expected.affine)
             active.append(mx.get_active_memory())
         with pytest.raises(InvalidInputError):
-            prepared.segment(image_path=str(source), output_dir=str(tmp_path / "case0"))
+            prepared.run(image_path=str(source), output_dir=str(tmp_path / "case0"))
         with pytest.raises(InvalidInputError):
-            prepared.segment(image_path=str(tmp_path / "missing.nii.gz"),
+            prepared.run(image_path=str(tmp_path / "missing.nii.gz"),
                          output_dir=str(tmp_path / "missing"))
         alias = tmp_path / "alias" / "mask.nii.gz"
         alias.parent.mkdir()
         source_before = source.read_bytes()
         alias.write_bytes(source_before)
         with pytest.raises(InvalidInputError):
-            prepared.segment(image_path=str(alias), output_dir=str(alias.parent), overwrite=True)
+            prepared.run(image_path=str(alias), output_dir=str(alias.parent), overwrite=True)
         assert alias.read_bytes() == source_before
         assert loads == 1
         # After warm-up the live MLX allocation must plateau rather than retain
@@ -340,7 +340,7 @@ def test_loaded_liver_model_matches_isolated_cases_and_bounds_model_memory(
     finally:
         prepared.close()
     with pytest.raises(RuntimeError, match="closed"):
-        prepared.segment(image_path=str(source), output_dir=str(tmp_path / "closed"))
+        prepared.run(image_path=str(source), output_dir=str(tmp_path / "closed"))
 
 
 @pytest.mark.metal
@@ -357,7 +357,7 @@ def test_loaded_configuration_and_folder_stay_fixed_after_caller_changes(
     other.mkdir()
     monkeypatch.chdir(other)
     try:
-        result = prepared.segment(image_paths=[str(source)], output_dir=str(tmp_path / "fixed"))
+        result = prepared.run(image_paths=[str(source)], output_dir=str(tmp_path / "fixed"))
         assert result["details"]["configuration"] == "3d_fullres"
         assert result["details"]["step_fraction"] == 0.5
         assert result["details"]["folds"] == [0]
@@ -380,12 +380,12 @@ def test_loaded_model_rejects_source_changes_and_reloading_picks_them_up(
         target = folder / changed
         target.touch()
         with pytest.raises(AssetNotReadyError, match="changed"):
-            prepared.segment(image_paths=[str(source)], output_dir=str(tmp_path / "stale"))
+            prepared.run(image_paths=[str(source)], output_dir=str(tmp_path / "stale"))
     finally:
         prepared.close()
     replacement = medmlx.load_model(weights_path=str(folder))
     try:
-        result = replacement.segment(image_paths=[str(source)], output_dir=str(tmp_path / "fresh"))
+        result = replacement.run(image_paths=[str(source)], output_dir=str(tmp_path / "fresh"))
         assert Path(result["outputs"]["mask"]).is_file()
     finally:
         replacement.close()
@@ -531,9 +531,9 @@ def test_siam_runner_predicts_in_canonical_order_and_restores_the_input_grid(
     canonical_path = tmp_path / "canonical.nii.gz"
     nib.save(canonical, canonical_path)
 
-    result = siam.segment(image_path=str(source), output_dir=str(tmp_path / "siam"),
+    result = siam.run(image_path=str(source), output_dir=str(tmp_path / "siam"),
                                weights_path=str(siam_model), fold=1)
-    expected = medmlx.segment(weights_path=str(siam_model), image_paths=[str(canonical_path)],
+    expected = medmlx.run(weights_path=str(siam_model), image_paths=[str(canonical_path)],
                           output_dir=str(tmp_path / "canonical"), folds=[1],
                           source_profile=SIAM_SOURCE_PROFILE, use_mirroring=False)
 
@@ -572,7 +572,7 @@ def test_siam_rejects_output_aliases_without_changing_input(
 
     try:
         with pytest.raises(InvalidInputError, match="must differ from"):
-            siam.segment(
+            siam.run(
                 image_path=str(source), output_dir=str(output), weights_path=str(siam_model),
                 voxel_size=voxel_size, fold=1, overwrite=True,
             )
@@ -606,7 +606,7 @@ def test_siam_replaces_only_the_output_directory_entry(
             target.hardlink_to(other)
 
     if overwrite:
-        result = siam.segment(
+        result = siam.run(
             image_path=str(source), output_dir=str(output), weights_path=str(siam_model),
             fold=1, overwrite=True,
         )
@@ -615,7 +615,7 @@ def test_siam_replaces_only_the_output_directory_entry(
         assert nib.load(target).shape == data.shape
     else:
         with pytest.raises(InvalidInputError, match="already exist"):
-            siam.segment(
+            siam.run(
                 image_path=str(source), output_dir=str(output), weights_path=str(siam_model),
                 fold=1,
             )
@@ -638,7 +638,7 @@ def test_cli_predict_computes_what_the_runner_computes(
     from nnunet_mlx.cli import main
 
     folder, source = case
-    result = medmlx.segment(weights_path=str(folder), image_paths=[str(source)],
+    result = medmlx.run(weights_path=str(folder), image_paths=[str(source)],
                         output_dir=str(tmp_path / "runner"), save_probabilities=True)
     prefix = tmp_path / "cli" / "case"
     arguments = ["model", "predict", "--model-folder", str(folder), "--input", str(source),
@@ -668,7 +668,7 @@ def test_run_matches_recorded_upstream_segmentation(
     source = tmp_path / "case_0000.nii.gz"
     nib.save(nib.Nifti1Image(arrays["image"], arrays["affine"]), source)
     options = next(item for item in runner["options"] if item["name"] == name)
-    result = medmlx.segment(
+    result = medmlx.run(
         weights_path=str(folder),
         image_paths=[str(source)],
         output_dir=str(tmp_path / "out"),

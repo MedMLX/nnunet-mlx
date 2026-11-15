@@ -12,7 +12,7 @@ from nnunet_mlx.named_models import READINESS, segment_folder
 MODEL = {
     "id": "nnunet-liver", "label": "nnU-Net liver CT", "task": "segmentation",
     "readiness": READINESS,
-    "run": "nnunet_mlx.named_models.liver:segment",
+    "run": "nnunet_mlx.named_models.liver:run",
     "cohort": "nnunet_mlx.named_models.liver:load_model",
     # Measured MLX peak for a 768x768x101 abdominal CT; larger inputs need more.
     "peak_memory_gb": 5.6,
@@ -21,7 +21,7 @@ MODEL = {
 }
 
 
-def segment(
+def run(
     *, image_path: PathLike, output_dir: PathLike, weights_path: PathLike | None = None,
     overwrite: bool = False, use_mirroring: bool = True, step_fraction: float = 0.5,
 ) -> RunResult:
@@ -52,16 +52,16 @@ def segment(
 
 
 class LiverModel:
-    """The liver model loaded once; :meth:`segment` takes the per-CT arguments."""
+    """The liver model loaded once; :meth:`run` takes the per-CT arguments."""
 
     def __init__(self, model: medmlx.NnUNetModel) -> None:
         """Own ``model``, released by :meth:`close`."""
         self._model = model
 
-    def segment(
+    def run(
         self, *, image_path: PathLike, output_dir: PathLike, overwrite: bool = False,
     ) -> RunResult:
-        """Segment one CT with the loaded model; see :func:`segment`.
+        """Segment one CT with the loaded model; see :func:`run`.
 
         Raises:
             RuntimeError: The model is closed.
@@ -72,7 +72,7 @@ class LiverModel:
         )
 
     def close(self) -> None:
-        """Release the model; later :meth:`segment` calls raise ``RuntimeError``."""
+        """Release the model; later :meth:`run` calls raise ``RuntimeError``."""
         self._model.close()
 
     def __enter__(self) -> LiverModel:
@@ -90,7 +90,7 @@ def load_model(
 ) -> LiverModel:
     """Load the liver model once to segment several CTs, or for a MedMLX cohort.
 
-    The arguments mean what they mean in :func:`segment`.
+    The arguments mean what they mean in :func:`run`.
     """
     folder = model_folder("nnunet-liver", weights_path)
     return LiverModel(medmlx.load_model(

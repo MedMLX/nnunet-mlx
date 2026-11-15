@@ -14,7 +14,7 @@ from nnunet_mlx.named_models import READINESS, segment_folder
 MODEL = {
     "id": "nnunet-autopet", "label": "nnU-Net AutoPET II", "task": "segmentation",
     "readiness": READINESS,
-    "run": "nnunet_mlx.named_models.autopet:segment",
+    "run": "nnunet_mlx.named_models.autopet:run",
     # Measured MLX peak for a 400x400x284 whole-body PET/CT; larger inputs need more.
     "peak_memory_gb": 4.8,
     "summary": "Tumor lesion segmentation of co-registered CT and SUV PET volumes.",
@@ -25,7 +25,7 @@ MODEL = {
 CHANNELS = ("ct", "pet")
 
 
-def segment(
+def run(
     *, image_paths: Mapping[str, PathLike], output_dir: PathLike,
     weights_path: PathLike | None = None, overwrite: bool = False,
     use_mirroring: bool = True, step_fraction: float = 0.5,

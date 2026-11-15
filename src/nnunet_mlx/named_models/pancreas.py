@@ -12,7 +12,7 @@ from nnunet_mlx.named_models import READINESS, segment_folder
 MODEL = {
     "id": "nnunet-pancreas", "label": "Pancreas segmentation", "task": "segmentation",
     "readiness": READINESS,
-    "run": "nnunet_mlx.named_models.pancreas:segment",
+    "run": "nnunet_mlx.named_models.pancreas:run",
     # Measured MLX peak for a 768x768x101 abdominal CT with mirroring; larger inputs need more.
     "peak_memory_gb": 14.5,
     "summary": "PancCTMultiTalentV2 pancreas and cancer segmentation on Metal.",
@@ -20,7 +20,7 @@ MODEL = {
 }
 
 
-def segment(
+def run(
     *, image_path: PathLike, output_dir: PathLike, weights_path: PathLike | None = None,
     overwrite: bool = False, fold: int = 0, use_mirroring: bool = True,
 ) -> RunResult:

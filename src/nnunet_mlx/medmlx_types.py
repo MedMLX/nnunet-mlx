@@ -1,4 +1,4 @@
-"""The JSON result contract of ``segment``."""
+"""The JSON result contract of ``run``."""
 
 from typing import TypedDict
 
@@ -25,6 +25,6 @@ class RunDetails(TypedDict):
     metrics: dict[str, object]
 
 
-# Return value of ``nnunet_mlx.segment``: ``mask`` (a label_map, or a binary_mask for
+# Return value of ``nnunet_mlx.run``: ``mask`` (a label_map, or a binary_mask for
 # a {0, 1} label table) and, with ``save_probabilities``, ``probabilities``.
 type RunResult = _RunResult[RunDetails]
