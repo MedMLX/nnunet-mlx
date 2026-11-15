@@ -13,6 +13,7 @@ from typing import cast
 import numpy as np
 import pytest
 from medmlx_core.errors import InvalidInputError
+from medmlx_core.outputs import validate_outputs
 from nnunet_reference.fixture_types import RunnerFixture, UpstreamRecording
 from nnunet_reference.oracle.network import real_image_input
 from nnunet_reference.runner_network import build_network
@@ -160,6 +161,9 @@ def test_liver_runner_writes_label_map_on_the_input_grid(
     mask_path = (output / "mask.nii.gz").resolve()
     assert result["outputs"] == {"mask": mask_path.as_posix()}
     assert result["artifacts"]["mask"].get("grid_of") == "image_path"
+    paths, artifacts = validate_outputs(result)
+    assert list(paths) == list(artifacts) == ["mask"]
+    assert artifacts["mask"]["kind"] in {"binary_mask", "label_map"}
     assert sorted(path.name for path in output.iterdir()) == ["mask.complete.json", "mask.nii.gz"]
     mask = nib.load(mask_path)
     labels = np.asarray(mask.dataobj)

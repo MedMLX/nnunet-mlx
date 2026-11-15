@@ -2,7 +2,7 @@
 
 from typing import TypedDict
 
-from medmlx_core.outputs import Artifact
+from medmlx_core.outputs import RunResult as _RunResult
 
 
 class RunDetails(TypedDict):
@@ -25,9 +25,6 @@ class RunDetails(TypedDict):
     metrics: dict[str, object]
 
 
-class RunResult(TypedDict):
-    """One segmentation: absolute output paths and artifacts by role, and run details."""
-
-    outputs: dict[str, str]
-    artifacts: dict[str, Artifact]
-    details: RunDetails
+# Return value of ``nnunet_mlx.segment``: ``mask`` (a label_map, or a binary_mask for
+# a {0, 1} label table) and, with ``save_probabilities``, ``probabilities``.
+type RunResult = _RunResult[RunDetails]
