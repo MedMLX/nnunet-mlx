@@ -364,6 +364,27 @@ On an Apple M5 Max (MLX 0.32.4), the five-fold full-head T1 run takes 22 s (20 t
 reference takes 1,328 s. Peak memory follows the field of view: a 400 mm head and
 shoulders CT reached 27.3 GB.
 
+### Five-fold CPU comparisons, 2026-11-17
+
+Both cases used the pinned CPU predictor described above, with FP32 network
+execution and nnU-Net's FP16 sliding-window accumulation. Each of the five
+folds covered eight tiles for the full-head T1 and one for the glioma T1.
+The full-head CPU run used Linux aarch64 and the glioma CPU run used macOS
+arm64. The Metal predictions used MLX 0.32.4 on M5 Max with
+`MLX_ENABLE_TF32=0`.
+
+| Case | Differing labels / voxels | Lowest foreground Dice | Max absolute probability difference | Mean absolute probability difference |
+| --- | ---: | ---: | ---: | ---: |
+| OpenNeuro ds000001 full-head T1 | 2 / 5,898,240 | 0.999998 (`WM`) | 0.0038964 | 2.54e-08 |
+| Isotropic skull-stripped glioma T1 | 14 / 8,928,000 | 0.999979 (`CSFv`) | 0.0038977 | 2.38e-07 |
+
+Label-only and saved-probability exports gave the same disagreement counts and
+per-class Dice on the input grids. All 17 foreground classes were present in
+both cases. The `Anomalies` labels matched exactly. Every six-connected
+component overlapped a component of the same class in the other prediction,
+in both directions. Rerunning the Metal predictor at `7f62c73` reproduced the
+saved masks, affines and probability arrays exactly.
+
 ## Bounded allocation and current comparisons
 
 Label-only inference checks restoration geometry and resampling policy before
@@ -393,8 +414,7 @@ Checks on Apple M5 Max, MLX 0.32.4, `MLX_ENABLE_TF32=0` (November 13, 2026):
 | SIAM five-fold full-head T1 (5,898,240 voxels) and isotropic glioma T1 (8,928,000 voxels), output handling | Both decoding modes give identical labels per case; source grids preserved; named-runner LPS reorientation is exact |
 
 The previous-versus-revised MLX row measures an optimization regression. The pinned
-CPU rows measure upstream agreement. The current SIAM checks cover exported grids
-and reorientation; their new full-volume CPU comparisons remain pending. The
+CPU rows measure upstream agreement. The
 [qualification workflow](../tests/README.md#full-volume-comparisons) records comparison
 types separately and reports per-class and component metrics.
 
