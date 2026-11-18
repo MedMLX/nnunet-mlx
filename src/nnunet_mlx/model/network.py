@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.kernels.metal_native_norm import instance_norm
+from nnunet_mlx.kernels.metal_single_channel_conv import single_channel_conv3d
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec, SpatialShape
 from nnunet_mlx.runtime import import_mlx
 
@@ -247,10 +248,16 @@ def _unbiased_convolution(conv: Conv3d, values: array | tuple[array, array]) -> 
     input-channel slice of the weight, each on 32-wide tiles, and the
     concatenated tensor is never formed. The float32 result differs from the
     single convolution only by the rounding of the two partial sums.
+
+    A one-channel input to the convolution described by
+    ``_single_channel_kernel_applies`` runs on a Metal kernel with the same
+    output bits as ``mx.conv3d``.
     """
     mx = _mx()
     weight = conv.weight
     if not isinstance(values, tuple):
+        if _single_channel_kernel_applies(conv, values):
+            return single_channel_conv3d(values, weight)
         return mx.conv3d(values, weight, conv.stride, conv.padding, conv.dilation)
     if not _split_concatenated_input(conv, values):
         concatenated = mx.concatenate(values, axis=-1)
@@ -260,6 +267,39 @@ def _unbiased_convolution(conv: Conv3d, values: array | tuple[array, array]) -> 
     return mx.conv3d(
         first, weight[..., :split], conv.stride, conv.padding, conv.dilation
     ) + mx.conv3d(second, weight[..., split:], conv.stride, conv.padding, conv.dilation)
+
+
+def _single_channel_kernel_applies(conv: Conv3d, values: array) -> bool:
+    """Return whether ``conv`` is the one-channel convolution compared bit for bit with MLX.
+
+    The configuration is the first convolution of the released liver model:
+    one float32 input channel to 32 outputs, 3x3x3 kernel, stride 1, padding 1
+    and dilation 1. MLX 0.32.4 pads that input to 16 channels; the direct
+    kernel gave identical bits on CT tiles, other spatial shapes and batch
+    sizes, and with unrelated weights. Other output channel counts, some of
+    which select different MLX tile sizes, were not compared and keep the
+    native path.
+    """
+    mx = _mx()
+    return (
+        values.ndim == 5
+        and values.shape[-1] == 1
+        and values.dtype == mx.float32
+        and conv.weight.dtype == mx.float32
+        and tuple(conv.weight.shape) == (32, 3, 3, 3, 1)
+        and _all_ones(conv.stride)
+        and _all_ones(conv.padding)
+        and _all_ones(conv.dilation)
+    )
+
+
+def _all_ones(setting: int | tuple[int, ...]) -> bool:
+    """Return whether a convolution setting is 1 on every axis.
+
+    ``mlx.nn.Conv3d`` stores stride and padding as tuples and leaves dilation
+    as passed, an integer by default.
+    """
+    return setting == 1 if isinstance(setting, int) else all(item == 1 for item in setting)
 
 
 def _split_concatenated_input(conv: Conv3d, parts: tuple[array, array]) -> bool:

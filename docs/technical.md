@@ -220,8 +220,10 @@ The 0.6.4 forward pass (116 ms) had three avoidable costs:
   instance-normalization Metal kernels. The output is bitwise equal to the
   separate operations.
 
-The 1→32 encoder convolution is unchanged; an im2col and matmul replacement
-took 14 ms, slower than MLX's padded path.
+The 1→32 encoder convolution kept MLX's padded path in this change; an im2col
+and matmul replacement took 14 ms, slower than that path. It now runs on the
+kernel described under
+[Single-channel first convolution](#single-channel-first-convolution).
 
 ### Results
 
@@ -424,11 +426,61 @@ annotation by 10.85 mL. Both annotation components overlap the prediction; seven
 candidate components have no annotation overlap, including one at most 100 mm³.
 Label-only and saved-probability outputs give the same result on this case.
 
-Three additional prototypes remain experiments. Timings are synchronized warm medians
+Two additional prototypes remain experiments. Timings are synchronized warm medians
 under the shared GPU lock; their local measurements do not estimate whole-case gains.
 
 | Probe | Baseline → prototype | Numerical result | Decision |
 | --- | --- | --- | --- |
-| 1→32, 3³, float32 128³ convolution; direct scalar-channel kernel | 9.91 → 3.24 ms; 767 → 383 MiB MLX peak | Bitwise-equal output on the sourced CT tile | Retain native dispatch pending network integration qualification |
 | Three-class normalization/label reduction, float32 128³; one thread per voxel | 1.02 → 0.22 ms | Equal labels and validity flags; float16/32, half rounding, ties and invalid-value controls also agree | Retain current kernel pending workflow measurement |
 | SIAM fold 0, 256×256×192 forward; asynchronous stage boundaries | 1,060.5 → 1,059.9 ms; 10,206 → 14,466 MiB MLX peak | Bitwise-equal output | Retain synchronous boundaries: similar time with higher memory |
+
+## Single-channel first convolution
+
+MLX 0.32.4 zero-pads the input and weight of a 3-D convolution up to a multiple of
+16 channels when the input channel count is not one. The first convolution of a
+one-channel model therefore computes sixteen products per kernel tap and holds a
+16-channel copy of each tile. A convolution from one float32 channel to 32 outputs with
+a 3×3×3 kernel, stride 1, padding 1 and dilation 1, the first convolution of the
+released liver model, now runs on a Metal kernel: one thread per voxel reads the 27
+taps once and accumulates every output channel with `fma` in weight order. The bias
+stays in the instance-normalization kernel. Every other convolution keeps `mx.conv3d`.
+
+The kernel returns the bits of `mx.conv3d`. Nine inputs were compared with the
+released liver weights and again with random weights, 824,528,224 output values each
+time, without a differing bit pattern: five 128³ HCC_063 CT tiles (interior, first,
+last, edge, and mirrored on all axes), a 97×153×131 crop, a batch of two, a 64³ array
+with zeros, negative zeros, subnormals and rescaled values, and a random 256×256×192
+array. SIAM and the pancreas model have the same first convolution; their fold-0
+logits on one real patch each (256×256×192 and 192³) are also bitwise unchanged.
+
+Measured on Apple M5 Max, MLX 0.32.4, `MLX_ENABLE_TF32=0` (November 17, 2026). Paired
+runs alternate the two paths in fresh processes under the shared GPU lock for six
+rounds (perfkit, 97% intervals):
+
+| Measurement | `mx.conv3d` | Metal kernel |
+| --- | ---: | ---: |
+| Bias-free 1→32 convolution of one 128³ CT tile | 5.29 ms | 0.84 ms (×0.157-0.163) |
+| Peak MLX memory of that convolution, buffer cache cleared | 511 MiB | 383 MiB |
+| One mirrored liver tile (8 passes) | 872.9 ms | 810.1 ms (×0.914-0.940) |
+| Peak MLX memory, one mirrored tile | 2,999 MiB | 2,356 MiB |
+
+The full HCC_063 CT with the released liver weights, fold 0, 0.5 step and eight
+mirrored views (192 tiles, 1,536 network passes), label-only output, as medians and
+ranges of the six rounds:
+
+| Measurement | `mx.conv3d` | Metal kernel |
+| --- | ---: | ---: |
+| Whole-case wall time | 189.4 s (185.7-197.3) | 168.3 s (163.9-178.1) |
+| Tile inference | 179.0 s (175.0-186.9) | 158.1 s (153.7-167.8) |
+| Peak MLX memory | 4,160 MiB | 3,517 MiB |
+
+The kernel path was faster in every round, by 12.0 to 30.7 s (×0.842-0.937); the
+mirrored-tile difference alone accounts for 12 s over 192 tiles. Each path reached the
+same peak in every run. With saved probabilities the peak fell from 3,694 to 3,051 MiB.
+
+The label-only and saved-probability outputs of the two paths are identical: the masks
+agree in all 25,952,256 voxels and the 77,856,768 saved float32 probabilities have
+equal bit patterns, which are also those of the November 13 Metal outputs. The
+comparisons with the pinned CPU predictor above are therefore unchanged: no label
+disagreements, liver and cancer Dice 1.0, maximum absolute probability difference
+9.39e-4 and mean 6.86e-10.
