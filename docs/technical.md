@@ -434,12 +434,161 @@ under the shared GPU lock; their local measurements do not estimate whole-case g
 | Three-class normalization/label reduction, float32 128³; one thread per voxel | 1.02 → 0.22 ms | Equal labels and validity flags; float16/32, half rounding, ties and invalid-value controls also agree | Retain current kernel pending workflow measurement |
 | SIAM fold 0, 256×256×192 forward; asynchronous stage boundaries | 1,060.5 → 1,059.9 ms; 10,206 → 14,466 MiB MLX peak | Bitwise-equal output | Retain synchronous boundaries: similar time with higher memory |
 
+## Sliding-window tile lifetime
+
+The accumulator builds each Gaussian-weighted update before it starts the next
+tile. The update owns its inputs, so the accumulator can release its Python
+references to the tile output and weighted scores sooner. The same additions
+run in tile order.
+
+Measured November 18, 2026 on an Apple M1 Max (64 GB, macOS 27.2.1, Python
+3.13.17, MLX 0.32.4, `MLX_ENABLE_TF32=0`). Perfkit alternated fresh processes
+at baseline `2cdbac7` and with the tile lifetime change under the shared GPU
+lock. Both variants used float32 network arithmetic, float16 sliding-window
+accumulation, step 0.5 and `save_probabilities=True`. SIAM ran five folds
+(40 tiles, 256×256×192) without mirroring. Pancreas ran the released fold
+(80 tiles, 192³) with eight mirrored views per tile.
+
+| Model and full-volume input | Counted pairs | Peak MLX memory (MiB), baseline → candidate | Median process wall time (s), baseline → candidate | Paired wall-time ratio, candidate / baseline |
+| --- | ---: | ---: | ---: | --- |
+| SIAM, OpenNeuro ds000001 sub-01 T1w (160×192×192) | 6 | 13,156 → 11,428 | 111.43 → 111.42 | 0.9969–1.0032 (96.875% interval) |
+| Pancreas, AMOS22 `amos_0008` CT (768×768×101) | 2 | 6,911 → 6,967 | 671.31 → 671.95 | 1.0008–1.0012 (observed range) |
+
+The runner reads the MLX allocator peak after export. Each variant reached
+the same rounded peak across its counted runs. The uncounted first pancreas
+runs reached 7,129 MiB and 6,967 MiB respectively. SIAM's counted peak fell
+13.1% and pancreas's rose 0.8%. SIAM wall time stayed within measurement noise.
+Two pancreas pairs cannot establish a 95% timing interval.
+
+The exported mask values, mask affines and float32 probability bits match
+exactly. The comparisons cover 5,898,240 mask voxels and 106,168,320
+probabilities for SIAM, and 59,572,224 mask voxels and 178,716,672 probabilities
+for pancreas.
+
+A separate six-pair forward probe used SIAM fold 0 and the first tile of the
+same T1. Adding synchronous evaluation after each full-resolution convolution
+and normalization lowered the peak through the first encoder stage from
+8,350 to 6,796 MiB. The final decoder still set a 10,252 MiB forward peak.
+All 226,492,416 float32 logits matched bit for bit. Warm forward medians were 1,825
+and 1,820 ms (96.875% paired ratio interval 0.985–1.013). The model keeps the
+existing stage boundaries.
+
+## MLX buffer-cache sweep
+
+The AMOS22 `amos_0008` pancreas run spent most of its peak process footprint
+on cached Metal buffers and large host allocations. The table below is from
+a separate attribution run on the Apple M1 Max with the default MLX cache
+limit. It uses the full 768×768×101 CT, fold 0, step 0.5, mirroring disabled
+and saved probabilities.
+
+| Point in the run | MLX active (GiB) | MLX cache (GiB) | MLX peak so far (GiB) | Physical footprint (GiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Model loaded | 0.38 | 0.26 | 0.52 | 0.78 |
+| Input preprocessed | 0.38 | 0.26 | 0.52 | 3.55 |
+| Tile inference finished | 0.38 | 11.79 | 6.49 | 15.12 |
+| Probabilities and labels restored | 0.38 | 11.79 | 6.49 | 21.48 |
+| Peak sampled during output read-back | 0.38 | 11.79 | 6.49 | 21.62 |
+| Files published | <0.01 | 12.17 | 6.49 | 21.62 |
+
+The 50 ms sampler read the MLX allocator counters and the macOS physical
+footprint together. The peak sample matched the kernel's footprint high-water
+mark. The cache accounted for 11.79 GiB, or 54.5% of that peak. There was
+9.45 GiB outside the active and cached MLX totals. A macOS `footprint`
+snapshot during restoration attributed 12.18 GiB to graphics
+and 8.64 GiB to large malloc regions at a footprint of 20.98 GiB. The initial
+probe peaked at 21.65 GiB during restoration, with 11.78 GiB cached.
+
+The host retains a 431 MiB float32 network input and 646 MiB of float16 logits
+through restoration. Export also holds 682 MiB of restored float32 probabilities,
+114 MiB of uint16 labels and a 227 MiB int32 mask read back for validation.
+Large malloc regions also cover resampling workspace and pages retained by
+the host allocator.
+
+With the experimental 512 MiB limit, the same case peaked at 10.51 GiB during
+read-back. At the peak, MLX held 0.38 GiB active and 0.68 GiB cached. MLX trims
+the cache on allocation, so frees can take it above the configured limit
+between allocations. [MLX 0.32.4 Metal allocator](https://github.com/ml-explore/mlx/blob/v0.32.4/mlx/backend/metal/allocator.cpp#L156-L189)
+
+Host restoration and export still set the peak. The anisotropic resampler
+used a 2.22 GiB float64 in-plane workspace. Later, the 682 MiB resampled
+logits and the 682 MiB probability volume were live together during decoding.
+At read-back, 9.45 GiB of the footprint lay outside the active and cached MLX
+totals. The 431 MiB preprocessed CT can be released once inference finishes
+if the export path retains its geometry and shape. The effect of that lifetime
+change on process footprint has yet to be measured.
+
+### Paired results
+
+Measured November 18, 2026 on an Apple M1 Max with 64 GB of unified memory,
+macOS 27.2.1, Python 3.13.17 and MLX 0.32.4. The baseline was `2cdbac7`
+with the sliding-window tile-lifetime change above. Each fresh process called
+`medmlx.run` with fold 0, step 0.5, mirroring disabled, FP32 network arithmetic
+(`MLX_ENABLE_TF32=0`), FP16 accumulation and probability export. The default
+cache limit on this machine was 60.8 GiB. Each variant changed only the
+process-local MLX cache limit.
+
+The inputs were the paired CT and SUV PET for AutoPET `0117d7f11f` (400×400×284),
+the AMOS22 `amos_0008` and MSD `pancreas_001` CTs (768×768×101 and 512×512×110),
+and the four-sequence BraTS `BRATS_001` MRI (240×240×155). The released AutoPET,
+pancreas and BraTS checkpoints were from Hugging Face revisions
+`655190e49d0bb8cced452984fb458f2f69cd5348`,
+`6bbcfea84c4a317b9deb8854eafb7392cd0cc8a6` and
+`b77b65309ac6f3cd747d5b849700ee866eac220a`, respectively.
+The runs processed 144, 80, 18 and 8 tiles for AutoPET, AMOS22, MSD and BraTS,
+respectively.
+
+Perfkit interleaved full processes under the shared GPU lock. One warm-up per
+variant was excluded. Wall time includes loading through output publication.
+Tile time is the runner's inference-stage metric. The memory columns show the
+largest counted MLX allocator peak and macOS `time -l` physical footprint.
+Six-round ratios use perfkit's 96.875% paired-sign interval. Ratio bounds from
+two-round sweeps are observed ranges. The AMOS22 sweeps each have their own
+paired default-limit baseline.
+
+| Full-volume case | Cache limit | Counted rounds | Median wall (s) | Median tile inference (s) | Peak MLX (MiB) | Peak footprint (GiB) | Paired wall-time ratio |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| BraTS `BRATS_001` | Default | 6 | 5.56 | 2.25 | 3,063.41 | 5.21 | — |
+| BraTS `BRATS_001` | 0 | 6 | 5.72 | 2.40 | 3,063.41 | 3.41 | 1.0211–1.0331 |
+| BraTS `BRATS_001` | 256 MiB | 6 | 5.72 | 2.41 | 3,063.41 | 3.43 | 1.0177–1.0357 |
+| BraTS `BRATS_001` | 512 MiB | 6 | 5.66 | 2.32 | 3,063.41 | 3.89 | 1.0058–1.0244 |
+| BraTS `BRATS_001` | 1 GiB | 6 | 5.62 | 2.30 | 3,063.41 | 4.07 | 1.0050–1.0188 |
+| BraTS `BRATS_001` | 2 GiB | 6 | 5.59 | 2.28 | 3,063.43 | 4.71 | 0.9959–1.0103 |
+| AMOS22 `amos_0008` | Default | 6 | 104.58 | 83.50 | 6,858.52 | 21.64 | — |
+| AMOS22 `amos_0008` | 512 MiB | 6 | 124.08 | 102.92 | 6,640.82 | 10.51 | 1.1800–1.1913 |
+| AMOS22 `amos_0008` | 1 GiB | 6 | 120.15 | 99.03 | 6,640.82 | 10.88 | 1.1301–1.1494 |
+| AMOS22 `amos_0008` | Default | 2 | 104.88 | 83.50 | 6,640.82 | 21.63 | — |
+| AMOS22 `amos_0008` | 0 | 2 | 125.49 | 104.29 | 6,640.82 | 9.83 | 1.1917–1.2013 (observed) |
+| AMOS22 `amos_0008` | 256 MiB | 2 | 125.47 | 104.37 | 6,640.82 | 10.51 | 1.1944–1.1981 (observed) |
+| AMOS22 `amos_0008` | 2 GiB | 2 | 119.59 | 98.46 | 6,640.82 | 11.98 | 1.1369–1.1437 (observed) |
+| MSD `pancreas_001` | Default | 2 | 30.35 | 19.88 | 6,155.88 | 13.32 | — |
+| MSD `pancreas_001` | 0 | 2 | 34.93 | 24.47 | 6,155.88 | 6.55 | 1.1499–1.1524 (observed) |
+| MSD `pancreas_001` | 256 MiB | 2 | 34.95 | 24.52 | 6,155.88 | 6.81 | 1.1453–1.1582 (observed) |
+| MSD `pancreas_001` | 512 MiB | 2 | 35.00 | 24.58 | 6,155.88 | 6.99 | 1.1534–1.1536 (observed) |
+| MSD `pancreas_001` | 1 GiB | 2 | 33.76 | 23.35 | 6,155.88 | 7.55 | 1.1115–1.1137 (observed) |
+| MSD `pancreas_001` | 2 GiB | 2 | 33.76 | 23.25 | 6,155.88 | 8.57 | 1.1115–1.1134 (observed) |
+| AutoPET `0117d7f11f` | Default | 2 | 58.94 | 49.13 | 2,853.42 | 7.02 | — |
+| AutoPET `0117d7f11f` | 0 | 2 | 72.62 | 62.86 | 2,620.61 | 4.01 | 1.2287–1.2354 (observed) |
+| AutoPET `0117d7f11f` | 256 MiB | 2 | 69.18 | 59.36 | 2,620.61 | 4.28 | 1.1719–1.1755 (observed) |
+| AutoPET `0117d7f11f` | 512 MiB | 2 | 69.38 | 59.62 | 2,620.62 | 4.67 | 1.1762–1.1779 (observed) |
+| AutoPET `0117d7f11f` | 1 GiB | 2 | 66.60 | 56.81 | 2,620.62 | 5.08 | 1.1288–1.1311 (observed) |
+| AutoPET `0117d7f11f` | 2 GiB | 2 | 59.74 | 49.96 | 2,620.61 | 5.45 | 1.0126–1.0147 (observed) |
+
+Direct file comparison found identical mask, probability archive and probability
+properties bytes against the default-limit output for every input and limit.
+
+No cache limit qualified. On BraTS, the 0 and 256 MiB caps had wall-time upper
+bounds of +3.31% and +3.57%, and 2 GiB increased the maximum MLX peak by
+20,352 bytes. Both observed AMOS22 pairs at 2 GiB also exceeded +13.6% wall
+time. On that CT, 512 MiB and 1 GiB cut peak process footprint by
+51.4% and 49.8%. Their wall-time intervals were +18.0% to +19.1% and +13.0% to
++14.9%, exceeding the +3% limit.
+
 ## Single-channel first convolution
 
 MLX 0.32.4 zero-pads the input and weight of a 3-D convolution up to a multiple of
-16 channels when the input channel count is not one. The first convolution of a
-one-channel model therefore computes sixteen products per kernel tap and holds a
-16-channel copy of each tile. A convolution from one float32 channel to 32 outputs with
+16 channels when the input channel count is not a multiple of 16. The first
+convolution of a one-channel model therefore computes sixteen products per kernel tap
+and holds a 16-channel copy of each tile. A convolution from one float32 channel to 32 outputs with
 a 3×3×3 kernel, stride 1, padding 1 and dilation 1, the first convolution of the
 released liver model, now runs on a Metal kernel: one thread per voxel reads the 27
 taps once and accumulates every output channel with `fma` in weight order. The bias
