@@ -413,30 +413,33 @@ def _accumulate_logits(
     # Keep the next tile's network queued while this tile accumulates, so Metal
     # does not idle during graph construction; at most two tile graphs are live.
     # Accumulation still applies tiles in order with unchanged arithmetic.
-    prediction = forward(tiles[0])
-    mx.async_eval(prediction)
+    queued = [forward(tiles[0])]
+    mx.async_eval(queued[0])
     for index, slices in enumerate(tiles):
+        prediction = queued.pop()
         local = (slice(slices[0].start - origin, slices[0].stop - origin), *slices[1:])
         updated = None
         if upstream_fp16:
-            weighted = prediction[0] * gaussian_float32
-            updated = (logits[local].astype(mx.float32) + weighted).astype(dtype)
+            updated = (
+                logits[local].astype(mx.float32) + prediction[0] * gaussian_float32
+            ).astype(dtype)
             mx.async_eval(updated)
-        upcoming = forward(tiles[index + 1]) if index + 1 < len(tiles) else None
-        if upcoming is not None:
-            mx.async_eval(upcoming)
+        else:
+            logits = cast(ScatterUpdate, logits.at[local]).add(prediction[0] * gaussian)
+        # The update retains the operands it needs. Extra Python references
+        # can keep tile buffers alive during the next forward.
+        del prediction
+        if index + 1 < len(tiles):
+            queued.append(forward(tiles[index + 1]))
+            mx.async_eval(queued[0])
         if updated is not None:
             # Finishing the tile first drops its view of the window, letting the
             # slice update reuse the buffer instead of copying the whole window.
             mx.eval(updated)
             logits[local] = updated
             del updated
-        else:
-            logits = cast(ScatterUpdate, logits.at[local]).add(prediction[0] * gaussian)
         normalizer = cast(ScatterUpdate, normalizer.at[local]).add(gaussian)
         mx.async_eval(logits, normalizer)
-        if upcoming is not None:
-            prediction = upcoming
         following = starts[index + 1][0] if index + 1 < len(tiles) else spatial[0]
         if following == starts[index][0]:
             continue
