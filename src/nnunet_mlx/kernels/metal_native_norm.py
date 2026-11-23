@@ -20,8 +20,9 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
+from medmlx_core.typing import MetalKernel
+
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.kernels.types import MetalKernel
 from nnunet_mlx.runtime import import_mlx
 
 if TYPE_CHECKING:

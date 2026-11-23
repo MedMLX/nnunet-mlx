@@ -13,8 +13,10 @@ from functools import lru_cache
 from numbers import Integral
 from typing import TYPE_CHECKING, cast
 
+from medmlx_core.typing import MetalKernel
+
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.kernels.types import MetalKernel, ShapedArray
+from nnunet_mlx.kernels.types import ShapedArray
 from nnunet_mlx.runtime import import_mlx
 
 CHUNK = 256  # oneMKL kc for the qualified small-spatial convolution

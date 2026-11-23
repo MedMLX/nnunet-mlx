@@ -39,7 +39,7 @@ keywords = [
 dependencies = [
   "blosc2>=3.3.2,<5",
   "imagecodecs>=2025,<2027",
-  "medmlx-core>=0.3,<0.4",
+  "medmlx-core>=0.3.2,<0.4",
   "mlx==0.32.4; platform_system == 'Darwin' and platform_machine == 'arm64'",
   "nibabel>=5.3,<6",
   "numpy>=2.0,<3",

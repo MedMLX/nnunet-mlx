@@ -11,11 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from medmlx_core.typing import ArrayTree
+
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.runtime import import_mlx
 
 
-class ResidentModel[I, O, P, S](Protocol):
+class ResidentModel[I, O, S](Protocol):
     """Structural type of the shared MLX network whose weights are swapped per fold."""
 
     @property
@@ -36,7 +38,7 @@ class ResidentModel[I, O, P, S](Protocol):
         """Load named weights into the resident network."""
         ...
 
-    def parameters(self) -> P:
+    def parameters(self) -> ArrayTree:
         """Return the resident network parameter tree."""
         ...
 
@@ -48,7 +50,7 @@ class FoldActivation:
     fold: int | str | None = None
 
 
-class CheckpointBackedFoldModel[I, O, P, S]:
+class CheckpointBackedFoldModel[I, O, S]:
     """Activate one verified fold into a shared resident MLX network on demand.
 
     On a switch, the weights file's device, inode, size and modification time
@@ -59,7 +61,7 @@ class CheckpointBackedFoldModel[I, O, P, S]:
 
     def __init__(
         self,
-        model: ResidentModel[I, O, P, S],
+        model: ResidentModel[I, O, S],
         *,
         fold: int | str,
         checkpoint: Path,
@@ -102,7 +104,7 @@ class CheckpointBackedFoldModel[I, O, P, S]:
         self._activation.fold = self.fold
 
 
-def load_fold_weights[I, O, P, S](model: ResidentModel[I, O, P, S], weights_file: Path) -> None:
+def load_fold_weights[I, O, S](model: ResidentModel[I, O, S], weights_file: Path) -> None:
     """Load ``weights_file`` into ``model`` (``strict=True``) and materialize the parameters."""
     mx, _ = import_mlx()
     model.load_weights(str(weights_file), strict=True)

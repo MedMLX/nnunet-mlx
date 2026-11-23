@@ -9,9 +9,8 @@ from typing import TYPE_CHECKING, cast
 from nnunet_mlx.errors import ContractError
 
 if TYPE_CHECKING:
+    from medmlx_core.typing import MetalKernel
     from mlx.core import array
-
-    from nnunet_mlx.kernels.types import MetalKernel
 
 INVALID_LABEL = 65535
 _ROW_VOXELS = 32768

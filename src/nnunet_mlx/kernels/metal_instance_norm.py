@@ -6,10 +6,10 @@ from functools import lru_cache
 from typing import TYPE_CHECKING
 
 import numpy as np
+from medmlx_core.typing import MetalKernel
 
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.kernels.metal_numeric import DOUBLE_SINGLE_HEADER
-from nnunet_mlx.kernels.types import MetalKernel
 from nnunet_mlx.runtime import import_mlx
 
 if TYPE_CHECKING:

@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from medmlx_core.typing import ArrayTree
+
 from nnunet_mlx.contracts import (
     parse_integer as _integer,
 )
@@ -18,7 +20,7 @@ from nnunet_mlx.contracts import (
     parse_string as _string,
 )
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.runtime import ArrayTree, import_mlx, tree_flatten
+from nnunet_mlx.runtime import import_mlx, tree_flatten
 from nnunet_mlx.storage.filesystem import write_new_directory
 
 if TYPE_CHECKING:
