@@ -576,6 +576,56 @@ TotalSegmentator uses ordered float32 arithmetic. Its fast, merged standard
 and five individual part masks matched voxel for voxel, and each wall-time
 interval included 1.0.
 
+### Constant tiles and probability export on HCC_063
+
+On a host tile where every voxel in each channel has the same float32 bits,
+each mirrored input gives the evaluation network identical data. The built-in
+plain and residual U-Nets run once on these tiles. Padding can give asymmetric
+logits, so all eight outputs are still reoriented and added in the original
+order. On one constant 128³ CT tile, this reduced median time from 851 to
+103 ms over four repetitions. A central tissue tile used all eight forwards.
+Across the two tiles, all 12,582,912 float32 logits matched bit for bit.
+Six of the CT's 192 tiles were constant. Reusing their predictions reduced
+the number of network evaluations from 1,536 to 1,494.
+
+Probability export streams the same float32 NumPy array into the NPZ archive
+with DEFLATE level 3. The eight-view HCC_063 archive went from 199,741,329 to
+199,571,434 bytes.
+
+Six full-CT rounds under the shared GPU lock used all six orderings of the
+three wheels, with one fresh process per wheel per round and one discarded
+warmup per wheel. The table gives medians and the 96.875% paired-sign interval
+for the new wall time divided by each reference time. The saved wheel is the
+qualified baseline for the convolution experiment above.
+
+| Eight-view build | Wall (s) | Tiles (s) | Restoration and export (s) | Peak process (GiB) | Peak MLX (MiB) | New/reference wall ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Saved wheel | 182.610 | 167.94 | 11.86 | 6.289 | 2,995.09 | 0.837–0.901 |
+| Revised convolution (`1ce73e5`) | 169.850 | 155.21 | 11.90 | 6.290 | 2,995.20 | 0.920–0.965 |
+| Constant-tile reuse and level-3 export | 157.555 | 148.68 | 6.13 | 6.282 | 2,995.20 | 1.000 |
+
+The new build saved 17.69–30.67 s per pair against the saved wheel and
+5.71–13.56 s against the revised convolution. Its highest process footprint
+was 6.291 GiB. Every run reproduced all 25,952,256 labels, all 77,856,768
+float32 probability bit patterns and the probability properties file.
+The output dimensions, affine, qform and sform matched the source CT.
+
+TotalSegmentator fast, merged standard and each standard part reproduced every
+label on the source grid. The table compares the saved wheel with the new build.
+The paired wall-time intervals include 1.0 for all seven workloads, with
+96.14% confidence for fast (12 rounds) and 96.875% for the others (six rounds).
+Median peak MLX memory differed by less than 0.01 MiB in every workload.
+
+| TotalSegmentator workload | Wall (s), saved → new | Peak process (GiB), saved → new | Peak MLX (MiB), new | New/saved wall ratio |
+| --- | ---: | ---: | ---: | ---: |
+| Fast | 0.920 → 0.935 | 6.353 → 6.354 | 4,509.03 | 1.000–1.033 |
+| Standard, all five parts | 10.035 → 10.010 | 7.029 → 6.692 | 3,658.80 | 0.995–1.010 |
+| Organs | 2.570 → 2.605 | 6.542 → 6.542 | 3,497.76 | 1.000–1.213 |
+| Vertebrae | 2.610 → 2.580 | 6.657 → 6.657 | 3,539.71 | 0.977–1.023 |
+| Cardiac | 2.565 → 2.575 | 6.192 → 6.194 | 3,372.01 | 0.985–1.032 |
+| Muscles | 3.040 → 3.095 | 6.483 → 6.483 | 3,476.80 | 0.968–1.056 |
+| Ribs | 3.225 → 3.215 | 6.654 → 6.660 | 3,539.70 | 0.985–1.035 |
+
 ### One view on HCC_063
 
 With `use_mirroring=False`, the saved wheel completed one fresh-process run in
@@ -584,7 +634,10 @@ two masks had Dice of 0.99145 for liver and 0.97815 for tumor. Against the
 HCC_063 DICOM SEG Mass annotation, tumor Dice was 0.82002 with one view and
 0.81830 with eight. Both predictions overlapped both annotated components using
 six-neighbor connectivity. The revised convolution reproduced the one-view mask
-and probabilities bit for bit in a 35.20 s repeat. The default uses eight views.
+and probabilities bit for bit in a 35.20 s repeat. With level-3 export, one
+fresh process reproduced the same one-view outputs in 28.41 s, saving 129.15 s
+against the new eight-view median. Its peak process footprint was 6.439 GiB
+and peak MLX memory was 2,819.20 MiB. The default uses eight views.
 
 ## MLX buffer-cache sweep
 

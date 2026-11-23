@@ -508,7 +508,13 @@ def export_prediction(
         )
         if (staged.probabilities is not None and staged.properties is not None
                 and prediction.probabilities is not None):
-            np.savez_compressed(staged.probabilities, probabilities=prediction.probabilities)
+            with (
+                zipfile.ZipFile(
+                    staged.probabilities, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=3,
+                ) as archive,
+                archive.open("probabilities.npy", "w", force_zip64=True) as member,
+            ):
+                np.save(member, prediction.probabilities, allow_pickle=False)
             sidecar_properties = dict(properties)
             sidecar_properties["probability_grid"] = {
                 "shape": list(prediction.probabilities.shape[1:]),

@@ -384,6 +384,26 @@ def _add_weighted_tile(window: array, scores: array, weights: array) -> array:
     return (window.astype(scores.dtype) + weighted).astype(window.dtype)
 
 
+def _can_share_mirrored_forward(model: object) -> bool:
+    """A built-in network in evaluation mode gives the same logits for identical inputs."""
+    from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
+
+    if type(model) is PlainConvUNet or type(model) is ResidualEncoderUNet:
+        return not model.training
+    return False
+
+
+def _spatially_constant(tile: HostArray) -> bool:
+    """Check whether every voxel in each float32 channel has the same bits."""
+    bits = tile.view(np.uint32)
+    spatial = bits.shape[1:]
+    first = bits[(slice(None), *(slice(1) for _ in spatial))]
+    # Reject ordinary CT tiles cheaply. An isolated differing voxel anywhere
+    # in a sampled-uniform tile still requires separate mirrored forwards.
+    sample = bits[(slice(None), *(slice(None, None, max(1, n // 4)) for n in spatial))]
+    return bool(np.all(sample == first) and np.all(bits == first))
+
+
 def _accumulate_logits(
     model: PredictionModel,
     padded: InputArray,
@@ -432,11 +452,17 @@ def _accumulate_logits(
         tuple(slice(start, start + size) for start, size in zip(offsets, patch, strict=True))
         for offsets in starts
     ]
+    # Inspect host tiles without synchronizing or copying a device input.
+    host_tiles = (
+        padded if axes and isinstance(padded, np.ndarray) and _can_share_mirrored_forward(model)
+        else None
+    )
 
     def forward(slices: tuple[slice, ...]) -> array:
         """Run the model and requested mirroring for one input tile."""
         return mirrored_prediction(
             model, volume[slices][None], axes, inference_runtime, num_classes=num_classes,
+            constant_input=host_tiles is not None and _spatially_constant(host_tiles[:, *slices]),
         )
 
     # Overlap graph construction with accumulation for mirrored or logit output.
@@ -531,6 +557,7 @@ def mirrored_prediction(
     mx: InferenceRuntime,
     *,
     num_classes: int,
+    constant_input: bool = False,
 ) -> array:
     """Average the tile and its mirrored predictions, flipped back, in upstream order.
 
@@ -538,7 +565,9 @@ def mirrored_prediction(
     Metal. When retaining all views would exceed 256 MiB, each running sum is
     evaluated before the next forward, releasing consumed outputs. Smaller heads
     retain queued execution: synchronizing each sum slowed the three-class liver
-    tile. Both routes preserve the original left-to-right additions.
+    tile. For a deterministic model on a spatially constant input, each view
+    reuses the first forward. Its logits can be asymmetric near padding, so
+    every output is still flipped back and added in the original order.
     """
     expected_shape = (*tile.shape[:-1], num_classes)
     raw_prediction = model(tile)
@@ -546,15 +575,19 @@ def mirrored_prediction(
     prediction = cast("array", raw_prediction)
     if not axes:
         return prediction
+    shared = prediction if constant_input else None
     count = 1
     evaluate_sum = prediction.nbytes * (1 << len(axes)) > _MIRROR_OUTPUT_BUDGET_BYTES
     mx.async_eval(prediction)
     for axis_count in range(1, len(axes) + 1):
         for selected in combinations(axes, axis_count):
             mlx_axes = tuple(axis + 1 for axis in selected)
-            mirrored = mx.contiguous(mx.flip(tile, axis=mlx_axes))
-            raw_prediction = model(mirrored)
-            _validate_prediction(raw_prediction, expected_shape, mx)
+            if shared is None:
+                mirrored = mx.contiguous(mx.flip(tile, axis=mlx_axes))
+                raw_prediction = model(mirrored)
+                _validate_prediction(raw_prediction, expected_shape, mx)
+            else:
+                raw_prediction = shared
             current = mx.flip(cast("array", raw_prediction), axis=mlx_axes)
             mx.async_eval(current)
             prediction = prediction + current

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -57,6 +58,47 @@ def test_mirrored_running_sum_preserves_order_bitwise(classes: int) -> None:
     )
     mx.eval(actual)
     np.testing.assert_array_equal(host_array(actual), expected)
+
+
+@pytest.mark.metal
+@pytest.mark.parametrize("residual", [False, True])
+def test_constant_and_nearly_constant_host_tiles_match_all_device_views(
+    tiny_spec: PlainConvUNetSpec, tiny_residual_spec: ResidualEncoderUNetSpec, residual: bool,
+) -> None:
+    """Cover asymmetric padding on a constant tile and one off-center voxel on the next."""
+    from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
+
+    mx, _ = import_mlx()
+    mx.random.seed(173)
+    model = (
+        ResidualEncoderUNet(replace(tiny_residual_spec, input_channels=2))
+        if residual else PlainConvUNet(replace(tiny_spec, input_channels=2))
+    )
+    model.eval()
+    data = np.ones((2, 8, 8, 12), dtype=np.float32)
+    data[1] = -2
+    data[1, 3, 5, 11] = 7
+    from_host, from_device = (
+        predict_logits(model, source, patch_size=(8, 8, 8), num_classes=3, mirroring_axes=(0, 1, 2))
+        for source in (data, mx.array(data))
+    )
+    np.testing.assert_array_equal(from_host.view(np.uint32), from_device.view(np.uint32))
+
+
+@pytest.mark.metal
+def test_constant_tile_preserves_stateful_callable_predictions() -> None:
+    """A custom predictor can return a different score for each identical input."""
+    mx, _ = import_mlx()
+    scores = iter(range(1, 9))
+
+    def next_score(tile: array) -> array:
+        return mx.full(tile.shape, next(scores), dtype=mx.float32)
+
+    actual = predict_logits(
+        next_score, np.zeros((1, 1, 1, 1), dtype=np.float32),
+        patch_size=(1, 1, 1), num_classes=1, mirroring_axes=(0, 1, 2),
+    )
+    assert actual.item() == 4.5
 
 
 @pytest.mark.metal
