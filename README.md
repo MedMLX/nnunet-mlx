@@ -90,7 +90,7 @@ with load_model() as model:
 ([repository](https://github.com/romainVala/SIAM), [paper](https://arxiv.org/abs/2605.02737)),
 trained on synthetic images.
 
-- **Labels:** 17 labels cover grey and white matter, CSF and ventricles, cerebellar grey
+- **Labels:** 17 labels cover gray and white matter, CSF and ventricles, cerebellar gray
   matter, deep nuclei, hippocampus and amygdala, dura, vessels, skull and scalp, plus
   `Anomalies` (17) for pathology.
 - **Prediction:** like `siam-pred`, the runner predicts on the volume reoriented to RAS
@@ -212,7 +212,7 @@ Every command takes `--help`, and `--json` prints machine-readable results.
 | Inference | Gaussian sliding window, mirroring, fold and configuration ensembles, probability export |
 | Plans | nnU-Net v2.8.1 `plans.json` and `dataset.json`, class and region heads |
 
-Anything else fails with an error; there is no PyTorch or CPU fallback.
+Anything else fails with an error.
 
 ### Compatibility profiles
 
@@ -238,8 +238,7 @@ segmentation quality.
 | `lesiontracer-autopet3-2024` | Residual `BasicBlockD`, organ-head variant | `3d_fullres_bs3` | LesionTracer autoPET III; auxiliary organ heads are excluded at conversion |
 | `prostate-mrl-no-mirroring` | As released | `3d_fullres` | Prostate MR-Linac (`nnUNetTrainerNoMirroring`) |
 
-✓ marks profiles whose model inference has been compared with the upstream reference on
-Metal for a limited set of cases.
+✓ marks profiles whose inference was compared with the upstream reference.
 
 ### Python API
 
@@ -257,13 +256,14 @@ result = predictor.predict_case(
 print(result.metrics)  # synchronized timings, tile counts and processed shapes
 ```
 
-For a single-channel 3-D class model, `predictor.predict_nifti(image)` returns
-labels without file I/O. `predictor.predict_nifti_probabilities(image)` returns
-a `NiftiPrediction`: `segmentation` on the source grid, float32 `probabilities`
-in `(C, Z, Y, X)` reader order, and reader geometry/crop/label `properties`.
-The reorienting reader keeps canonical axes for probabilities. `inputs` is an
-empty list because no source file was read. SimpleITK probability geometry
-requires orthonormal axes and consistent coded NIfTI forms.
+For a single-channel 3D class model, two methods skip file I/O:
+
+- `predictor.predict_nifti(image)` returns the labels.
+- `predictor.predict_nifti_probabilities(image)` returns a `NiftiPrediction`:
+  `segmentation` on the source grid, float32 `probabilities` in `(C, Z, Y, X)` reader
+  order (canonical axes with the reorienting reader), and the reader's geometry, crop
+  and label `properties`. `inputs` is an empty list. With SimpleITK, probability
+  geometry needs orthonormal axes and consistent NIfTI qform and sform codes.
 
 `ModelFolderPredictor` accumulates sliding windows in float32, while the runners and the
 CLI accumulate in float16 as nnU-Net does, so their outputs can differ slightly.
