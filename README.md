@@ -84,7 +84,7 @@ with load_model() as model:
 - **BraTS** averages five folds; `fold=` selects one. It keeps the original BAMF labels:
   background 0, edema 1, non-enhancing 2, empty 3, enhancing 4.
 - **MRSegmentator** averages five folds; `fast=True` uses fold 0 and `fold=` selects
-  one. It runs without mirroring, with `torch-order-fp32` arithmetic.
+  one. It runs without mirroring, with `source-fp32` arithmetic.
 
 **SIAM** v0.3 is the contrast-agnostic head tissue model by Valabregue et al.
 ([repository](https://github.com/romainVala/SIAM), [paper](https://arxiv.org/abs/2605.02737)),
@@ -159,7 +159,7 @@ mlx-model/
 | `folds` | every numeric fold | Integers to ensemble, or `["all"]` for `fold_all` |
 | `checkpoint_name` | `checkpoint_final` | Checkpoint directory in each fold |
 | `source_profile` | `nnunet-v2.8.1-default` | Compatibility profile, see below |
-| `precision` | `native` | Or `torch-order-fp32`, for the profiles that require it |
+| `precision` | `fast-fp32` | Or `source-fp32`, for the profiles that require it |
 | `step_fraction` | `0.5` | Sliding-window step, in (0, 1] |
 | `use_mirroring` | `True` | Use the checkpoint's mirroring test-time augmentation |
 | `save_probabilities` | `False` | Also write probabilities and their nnU-Net properties sidecar |
@@ -219,8 +219,8 @@ Anything else fails with an error; there is no PyTorch or CPU fallback.
 Models trained with `nnUNetTrainer` or a variant that builds the network from the plans
 use the default profile. Released models from other trainers need the profile for their
 exact dataset, trainer and configuration, selected with `--source-profile` or
-`source_profile=`. Profiles marked `torch-order-fp32` also need
-`--arithmetic torch-order-fp32`, or `precision="torch-order-fp32"` in Python. Loading
+`source_profile=`. Profiles marked `source-fp32` also need
+`--arithmetic source-fp32`, or `precision="source-fp32"` in Python. Loading
 checks each checkpoint's trainer, configuration and plans against the selected profile. Profiles cover inference only, not training or
 segmentation quality.
 
@@ -231,9 +231,9 @@ segmentation quality.
 | `prostate158-2d-100epochs` ✓ | Residual `BasicBlockD` | `2d` | Prostate158; up to 3 outputs |
 | `chronoroot2-arabidopsis-2000epochs` ✓ | Residual `BasicBlockD` | `2d` | ChronoRoot2 plant roots; 7 outputs |
 | `cads-oar258-open` ✓ | Residual `BasicBlockD` | `3d_fullres` | CADS OAR258; 30 outputs; fold `all`, no mirroring |
-| `smile-abdomenatlasf-2d` ✓ | Residual `BasicBlockD` | `2d` | SMILE AbdomenAtlas; 26 outputs; `torch-order-fp32`, fold `all` |
-| `totalsegmentator-v2-ct` ✓ | `PlainConvUNet` | `3d_fullres` | TotalSegmentator v2 Dataset291–295, 297, 298 and the Dataset300 body model; `torch-order-fp32` |
-| `mrsegmentator-1.2-base` | `PlainConvUNet` | `3d_fullres_bs8` | MRSegmentator 1.2; `torch-order-fp32` |
+| `smile-abdomenatlasf-2d` ✓ | Residual `BasicBlockD` | `2d` | SMILE AbdomenAtlas; 26 outputs; `source-fp32`, fold `all` |
+| `totalsegmentator-v2-ct` ✓ | `PlainConvUNet` | `3d_fullres` | TotalSegmentator v2 Dataset291–295, 297, 298 and the Dataset300 body model; `source-fp32` |
+| `mrsegmentator-1.2-base` | `PlainConvUNet` | `3d_fullres_bs8` | MRSegmentator 1.2; `source-fp32` |
 | `lion-fdg-1.0.4` | As released | `3d_fullres` | LION FDG tumor model (`nnUNetTrainerDA5`) |
 | `lesiontracer-autopet3-2024` | Residual `BasicBlockD`, organ-head variant | `3d_fullres_bs3` | LesionTracer autoPET III; auxiliary organ heads are excluded at conversion |
 | `prostate-mrl-no-mirroring` | As released | `3d_fullres` | Prostate MR-Linac (`nnUNetTrainerNoMirroring`) |

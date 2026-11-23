@@ -96,7 +96,7 @@ _SOURCE_PROFILES = {
     TOTALSEGMENTATOR_CT_SOURCE_PROFILE: InferenceSourceProfile(
         name=TOTALSEGMENTATOR_CT_SOURCE_PROFILE,
         models=tuple(
-            InferenceModelIdentity(dataset, trainer, "3d_fullres", "torch-order-fp32")
+            InferenceModelIdentity(dataset, trainer, "3d_fullres", "source-fp32")
             for dataset, trainer in (
                 ("Dataset291_TotalSegmentator_part1_organs_1559subj", "nnUNetTrainerNoMirroring"),
                 ("Dataset292_TotalSegmentator_part2_vertebrae_1532subj",
@@ -117,7 +117,7 @@ _SOURCE_PROFILES = {
         name=MRSEGMENTATOR_SOURCE_PROFILE,
         models=(InferenceModelIdentity(
             "Dataset050_ukbb_inhouse_nako", "nnUNetTrainerNoMirroring",
-            "3d_fullres_bs8", "torch-order-fp32",
+            "3d_fullres_bs8", "source-fp32",
         ),),
     ),
     LION_FDG_SOURCE_PROFILE: InferenceSourceProfile(
@@ -138,7 +138,7 @@ _SOURCE_PROFILES = {
         name=SMILE_SOURCE_PROFILE,
         models=(
             InferenceModelIdentity(
-                "Dataset808_AbdomenAtlasF", "nnUNetTrainer", "2d", "torch-order-fp32",
+                "Dataset808_AbdomenAtlasF", "nnUNetTrainer", "2d", "source-fp32",
             ),
         ),
     ),

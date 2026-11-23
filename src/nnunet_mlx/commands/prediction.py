@@ -86,9 +86,9 @@ def model_predict_command(
         str,
         typer.Option(
             "--arithmetic",
-            help="native, or torch-order-fp32: MLX on Metal in the pinned Torch rounding order.",
+            help="fast-fp32, or source-fp32: MLX on Metal in the pinned Torch rounding order.",
         ),
-    ] = "native",
+    ] = "fast-fp32",
     save_probabilities: Annotated[
         bool, typer.Option("--save-probabilities", help="Write .npz and .pkl sidecars.")
     ] = False,
@@ -195,9 +195,9 @@ def model_predict_folder_command(
         str,
         typer.Option(
             "--arithmetic",
-            help="native, or torch-order-fp32: MLX on Metal in the pinned Torch rounding order.",
+            help="fast-fp32, or source-fp32: MLX on Metal in the pinned Torch rounding order.",
         ),
-    ] = "native",
+    ] = "fast-fp32",
     save_probabilities: Annotated[
         bool, typer.Option("--save-probabilities", help="Write .npz and .pkl sidecars.")
     ] = False,

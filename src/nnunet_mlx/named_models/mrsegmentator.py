@@ -28,7 +28,7 @@ def run(
 
     Default inference averages all five folds. ``fast=True`` selects fold 0;
     an explicit fold takes precedence. Mirroring stays disabled, and arithmetic
-    remains ``torch-order-fp32``. Invalid folds fail before downloading.
+    remains ``source-fp32``. Invalid folds fail before downloading.
 
     Args:
         image_path: MR NIfTI volume.
@@ -51,5 +51,5 @@ def run(
     return segment_folder(
         folder, images, output_dir, "3d_fullres_bs8", folds, overwrite=overwrite,
         grid_of="image_path", source_profile="mrsegmentator-1.2-base",
-        precision="torch-order-fp32", use_mirroring=False,
+        precision="source-fp32", use_mirroring=False,
     )

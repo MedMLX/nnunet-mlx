@@ -175,8 +175,8 @@ class ModelFolderPredictor:
         bundle: Loaded model folder (see ``load_model_bundle``).
         step_fraction: Sliding-window stride as a fraction of the patch size, in (0, 1].
         compile_models: Compile models inside the supported compilation envelope
-            (native arithmetic only). Off by default: the fused native kernels make
-            compiled forwards no faster. Ordered ``torch-order-fp32`` arithmetic
+            (``fast-fp32`` arithmetic only). Off by default: the fused native kernels
+            make compiled forwards no faster. Ordered ``source-fp32`` arithmetic
             and checkpoint-backed multi-fold models reject ``True``.
         accumulation: ``"float32"`` or ``"nnunet-fp16"`` window accumulation; see
             ``predict_logits``.
@@ -196,7 +196,7 @@ class ModelFolderPredictor:
     ) -> None:
         """Configure the model bundle, sliding-window settings and compilation policy."""
         self.bundle = bundle
-        if bundle.arithmetic != "native" and compile_models:
+        if bundle.arithmetic != "fast-fp32" and compile_models:
             raise ContractError("ordered inference arithmetic requires compile_models=False")
         self.compilation_enabled = compile_models
         models = (

@@ -4,7 +4,7 @@ Three bandwidth-bound passes replace the eager graph's materialized centered and
 squared tensors: a spatial sum, a fused centered sum and sum of squares, and the
 affine output. Each thread accumulates one channel over a 256-row spatial
 partition, so float32 chains stay as short as the reduction they replace; the
-partitions are then summed with MLX. ``torch-order-fp32`` keeps its own
+partitions are then summed with MLX. ``source-fp32`` keeps its own
 reduction-order kernels in ``metal_instance_norm``.
 
 A preceding convolution's bias and a following LeakyReLU can run inside these

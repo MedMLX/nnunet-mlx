@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from mlx.core import array
     from mlx.nn import Conv2d, Conv3d, ConvTranspose2d, ModuleTree
 
-TORCH_ORDER_FLOAT32 = "torch-order-fp32"
+SOURCE_FLOAT32 = "source-fp32"
 
 
 class OrderedConv3d(MlxModule):
@@ -380,7 +380,7 @@ def apply_inference_arithmetic(
 
     Args:
         model: Loaded network, mutated in place.
-        arithmetic: Must be `TORCH_ORDER_FLOAT32`.
+        arithmetic: Must be `SOURCE_FLOAT32`.
         source_profile: Compatibility profile name recorded at conversion, if any.
         patch_size: Plans patch size in voxels, required to match for residual models.
 
@@ -388,7 +388,7 @@ def apply_inference_arithmetic(
         ContractError: If the arithmetic, topology, profile, patch size, training
             mode, bias/affine settings or float32 parameter dtype is unsupported.
     """
-    if arithmetic != TORCH_ORDER_FLOAT32:
+    if arithmetic != SOURCE_FLOAT32:
         raise ContractError(f"unsupported inference arithmetic {arithmetic!r}")
     residual = isinstance(model, ResidualEncoderUNet)
     totalsegmentator = source_profile == TOTALSEGMENTATOR_CT_SOURCE_PROFILE
@@ -400,18 +400,18 @@ def apply_inference_arithmetic(
             or model.training
         ):
             raise ContractError(
-                "torch-order-fp32 requires the qualified SMILE topology, "
+                "source-fp32 requires the qualified SMILE topology, "
                 "source and patch in evaluation mode"
             )
     elif not isinstance(model, PlainConvUNet) or model.spec.spatial_dims != 3 or model.training:
-        raise ContractError("torch-order-fp32 requires a 3-D PlainConvUNet in evaluation mode")
+        raise ContractError("source-fp32 requires a 3-D PlainConvUNet in evaluation mode")
     if not model.spec.conv_bias or not model.spec.norm_affine:
-        raise ContractError("torch-order-fp32 requires convolution bias and affine normalization")
+        raise ContractError("source-fp32 requires convolution bias and affine normalization")
     mx, _ = import_mlx()
     import mlx.nn as nn
 
     if any(value.dtype != mx.float32 for _, value in tree_flatten(model.parameters())):
-        raise ContractError("torch-order-fp32 requires float32 model parameters")
+        raise ContractError("source-fp32 requires float32 model parameters")
     replacements: list[tuple[str, MlxModule]] = []
     for name, layer in model.named_modules():
         if isinstance(layer, nn.Conv3d):

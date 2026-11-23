@@ -44,7 +44,7 @@ class ModelBundle:
     input modalities in dataset.json; ``input_channels`` additionally counts the
     one-hot previous-stage channels of a cascade model. ``mirroring_axes`` are the
     spatial axes (plans axis order) used for test-time mirroring; the empty tuple
-    disables it. ``arithmetic`` is ``"native"`` or ``"torch-order-fp32"``.
+    disables it. ``arithmetic`` is ``"fast-fp32"`` or ``"source-fp32"``.
     """
 
     folder: Path
@@ -59,7 +59,7 @@ class ModelBundle:
     image_channels: int
     input_channels: int
     image_reader_writer: str
-    arithmetic: str = "native"
+    arithmetic: str = "fast-fp32"
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +91,7 @@ def load_model_bundle(
     folds: Sequence[int | str] | None = None,
     checkpoint_name: str = "checkpoint_final",
     source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE,
-    arithmetic: str = "native",
+    arithmetic: str = "fast-fp32",
 ) -> ModelBundle:
     """Load and verify a converted MLX model folder.
 
@@ -105,7 +105,7 @@ def load_model_bundle(
         checkpoint_name: MLX checkpoint directory name inside each fold folder.
         source_profile: Name of the admitted model-identity profile the checkpoint
             identity is checked against.
-        arithmetic: ``"native"``, or ``"torch-order-fp32"`` to follow the pinned
+        arithmetic: ``"fast-fp32"``, or ``"source-fp32"`` to follow the pinned
             PyTorch CPU float32 operation order on Metal.
 
     Raises:
@@ -114,7 +114,7 @@ def load_model_bundle(
             fold, configuration or profile, an upstream ``.pth`` file is given
             instead of a converted checkpoint, or the folds disagree on mirroring.
     """
-    if arithmetic not in {"native", "torch-order-fp32"}:
+    if arithmetic not in {"fast-fp32", "source-fp32"}:
         raise ContractError(f"unsupported inference arithmetic {arithmetic!r}")
     folder = Path(model_folder)
     profile = resolve_inference_source_profile(source_profile)
@@ -194,7 +194,7 @@ def load_model_bundle(
     # All folds share one network: the loop above leaves the last fold's weights
     # resident, which ``activation`` records so the wrappers can skip a reload.
     model.eval()
-    if arithmetic != "native":
+    if arithmetic != "fast-fp32":
         from nnunet_mlx.prediction.arithmetic import apply_inference_arithmetic
 
         apply_inference_arithmetic(

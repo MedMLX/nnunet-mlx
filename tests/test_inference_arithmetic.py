@@ -189,9 +189,9 @@ def test_totalsegmentator_fusions_preserve_logits_and_checkpoint_updates(
         model.eval()
     parameters = tree_flatten(generic.parameters())
     optimized.load_weights(parameters)
-    apply_inference_arithmetic(generic, "torch-order-fp32")
+    apply_inference_arithmetic(generic, "source-fp32")
     apply_inference_arithmetic(
-        optimized, "torch-order-fp32", source_profile=TOTALSEGMENTATOR_CT_SOURCE_PROFILE,
+        optimized, "source-fp32", source_profile=TOTALSEGMENTATOR_CT_SOURCE_PROFILE,
     )
     values = mx.random.normal((1, 8, 8, 8, 1))
     expected, actual = host_array(generic(values)), host_array(optimized(values))

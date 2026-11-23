@@ -45,7 +45,7 @@ SEGMENTATION_STEM = "mask"
 PROBABILITIES = "probabilities.npz"
 PROBABILITY_PROPERTIES = "probabilities.pkl"
 NIFTI_ENDINGS = (".nii.gz", ".nii")
-TORCH_ORDER_FLOAT32 = "torch-order-fp32"
+SOURCE_FLOAT32 = "source-fp32"
 _WEIGHTS_HINT = (
     "download a compatible native safetensors model folder from MedMLX "
     "and pass it as weights_path"
@@ -141,7 +141,7 @@ def check_request(
     overwrite: object = False,
     folds: Sequence[int | str] | None = None,
     source_profile: str | None = None,
-    precision: str = "native",
+    precision: str = "fast-fp32",
     step_fraction: object = 0.5,
     use_mirroring: object = True,
     save_probabilities: object = False,
@@ -190,7 +190,7 @@ def check_request(
         step = parse_number(step_fraction, name="step_fraction")
         if not 0 < step <= 1:
             raise ContractError(f"step_fraction must be in (0, 1], got {step_fraction}")
-        if precision not in {"native", TORCH_ORDER_FLOAT32}:
+        if precision not in {"fast-fp32", SOURCE_FLOAT32}:
             raise ContractError(f"unsupported precision {precision!r}")
         if source_profile is not None:
             resolve_inference_source_profile(source_profile)
@@ -210,7 +210,7 @@ def run(
     folds: Sequence[int | str] | None = None,
     checkpoint_name: str = "checkpoint_final",
     source_profile: str | None = None,
-    precision: str = "native",
+    precision: str = "fast-fp32",
     step_fraction: float = 0.5,
     use_mirroring: bool = True,
     save_probabilities: bool = False,
@@ -237,7 +237,7 @@ def run(
         checkpoint_name: MLX checkpoint directory inside each fold; defaults to
             ``checkpoint_final``.
         source_profile: Compatibility profile; defaults to the nnU-Net v2.8.1 profile.
-        precision: ``native`` (default), or ``torch-order-fp32`` to run MLX kernels
+        precision: ``fast-fp32`` (default), or ``source-fp32`` to run MLX kernels
             on Metal in the pinned PyTorch CPU float32 operation order (only for
             the model profiles that admit it).
         step_fraction: Sliding-window step as a fraction of the patch, in (0, 1].
@@ -289,7 +289,7 @@ def segment_case(
     folds: Sequence[int | str] | None = None,
     checkpoint_name: str = "checkpoint_final",
     source_profile: str | None = None,
-    precision: str = "native",
+    precision: str = "fast-fp32",
     step_fraction: float = 0.5,
     use_mirroring: bool = True,
     save_probabilities: bool = False,
@@ -498,7 +498,7 @@ class NnUNetModel:
     def __init__(
         self, *, weights_path: PathLike, configuration: str = "3d_fullres",
         folds: Sequence[int | str] | None = None, checkpoint_name: str = "checkpoint_final",
-        source_profile: str | None = None, precision: str = "native",
+        source_profile: str | None = None, precision: str = "fast-fp32",
         step_fraction: float = 0.5, use_mirroring: bool = True,
     ) -> None:
         """Load and bind the selected model once; cases are supplied to :meth:`run`."""
@@ -590,7 +590,7 @@ class NnUNetModel:
 def load_model(
     *, weights_path: PathLike, configuration: str = "3d_fullres",
     folds: Sequence[int | str] | None = None, checkpoint_name: str = "checkpoint_final",
-    source_profile: str | None = None, precision: str = "native", step_fraction: float = 0.5,
+    source_profile: str | None = None, precision: str = "fast-fp32", step_fraction: float = 0.5,
     use_mirroring: bool = True,
 ) -> NnUNetModel:
     """Load a converted model folder once to segment several cases.

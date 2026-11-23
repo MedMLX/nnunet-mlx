@@ -19,7 +19,7 @@ Prediction results record `accumulation` and `decoding`; MedMLX returns these in
 `details`, together with `save_probabilities`. Decoding is `logit-argmax`,
 `softmax-argmax`, or `sigmoid-region-threshold`.
 
-`--arithmetic torch-order-fp32` (`arithmetic="torch-order-fp32"`) still runs entirely in
+`--arithmetic source-fp32` (`arithmetic="source-fp32"`) still runs entirely in
 MLX on Metal. It selects local kernels that sum float32 values in the pinned PyTorch CPU
 order, which some released models need to reproduce their reference labels exactly. It
 disables model compilation. Profiles that list it reject any other arithmetic, and no other

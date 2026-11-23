@@ -301,7 +301,7 @@ def test_loaded_liver_model_matches_isolated_cases_and_bounds_model_memory(
     def counted_load(
         model_folder: str | Path, *, configuration: str, folds: Sequence[int | str] | None = None,
         checkpoint_name: str = "checkpoint_final",
-        source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE, arithmetic: str = "native",
+        source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE, arithmetic: str = "fast-fp32",
     ) -> model_folder.ModelBundle:
         nonlocal loads
         loads += 1
@@ -683,7 +683,7 @@ def test_run_matches_recorded_upstream_segmentation(
     np.testing.assert_array_equal(np.asarray(actual.dataobj), arrays[f"segmentation_{name}"])
     np.testing.assert_array_equal(actual.affine, arrays[f"affine_{name}"])
     details = cast(dict[str, object], result["details"])
-    assert details["precision"] == "native"
+    assert details["precision"] == "fast-fp32"
     assert details["accumulation"] == "nnunet-fp16"
     assert details["folds"] == options["folds"]
     assert details["mirroring_axes"] == options["mirroring_axes"]

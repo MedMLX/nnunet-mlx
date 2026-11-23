@@ -21,7 +21,7 @@ READINESS = "nnunet_mlx.medmlx:readiness"
 def segment_folder(
     folder: Path, images: Sequence[Path], output_dir: PathLike, configuration: str,
     folds: list[int] | None, *, overwrite: bool, grid_of: str,
-    source_profile: str = "nnunet-v2.8.1-default", precision: str = "native",
+    source_profile: str = "nnunet-v2.8.1-default", precision: str = "fast-fp32",
     use_mirroring: bool = True, step_fraction: float = 0.5,
 ) -> RunResult:
     """Segment one case of a released model; the generic path admits its tensors."""
