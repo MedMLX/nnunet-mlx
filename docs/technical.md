@@ -22,7 +22,7 @@ Prediction results record `accumulation` and `decoding`; MedMLX returns these in
 `--arithmetic torch-order-fp32` (`arithmetic="torch-order-fp32"`) still runs entirely in
 MLX on Metal. It selects local kernels that sum float32 values in the pinned PyTorch CPU
 order, which some released models need to reproduce their reference labels exactly. It
-disables compilation. Profiles that list it reject any other arithmetic, and no other
+disables model compilation. Profiles that list it reject any other arithmetic, and no other
 profile accepts it.
 
 ## Compatibility profiles
@@ -273,17 +273,19 @@ The full-case label maps of 0.6.4 and this change are identical in all
 
 ## Host resampling
 
-Spline resampling of image data and of logits restored on the host uses SciPy, which
-releases the GIL, so independent channels and the in-plane slices of separate-axis
-resampling run on up to eight threads with bitwise unchanged results. Whole-volume
-channels run concurrently only while their float64 working sets fit 4 GiB, so large
-volumes keep one-channel-at-a-time memory. On an Apple M5 Max, paired runs on arrays
-from a 512×512×227 CT give: separate-axis resampling of 57 slices at 5 mm to 1 mm,
-688 to 180 ms; three float16 logit channels from 160×384×384 to 200×480×480,
-2.64 to 1.05 s, with host memory rising from 0.55 to 1.43 GB. Single-channel
-whole-volume resampling, the bulk of preprocessing for one CT, is unchanged. With
-`nnunet-fp16` accumulation, host logits stay float16 from the sliding window
-through fold averaging instead of passing through a float32 volume.
+SciPy resamples large float16 and float32 volumes one channel at a time. For linear
+and cubic interpolation, up to eight threads write disjoint slabs on the half-pixel
+grid. Linear interpolation reads only the source planes that bracket each slab.
+Cubic interpolation computes spline coefficients once across the full channel so slab
+boundaries do not affect the result. Float16 logits retain their original rounding
+before softmax or argmax.
+
+Separate-axis resampling distributes independent in-plane slices across threads.
+On the M5 Max, resampling 57 slices from 5 mm to 1 mm took 180 ms with threading
+and 688 ms on one thread. An earlier implementation parallelized whole channels
+within a 4 GiB budget. For three float16 logit channels resized from 160×384×384
+to 200×480×480, that reduced time from 2.64 to 1.05 s and increased host memory
+from 0.55 to 1.43 GB.
 
 ## Torch-grid resampling on Metal
 
@@ -473,6 +475,117 @@ All 226,492,416 float32 logits matched bit for bit. Warm forward medians were 1,
 and 1,820 ms (96.875% paired ratio interval 0.985–1.013). The model keeps the
 existing stage boundaries.
 
+## Full liver CT and TotalSegmentator on M5 Max
+
+On November 22, 2026, nnunet-mlx 0.9.0 and the optimized wheel ran the full
+HCC-TACE-Seg HCC_063 CT (512×512×99) on an M5 Max with 128 GB, macOS 27.2.1,
+Python 3.13.17 and MLX 0.32.4. The liver model used fold 0, 192 tiles of 128³,
+step 0.5, eight mirrored views per tile and float32 probability export.
+TotalSegmentator MLX (`b4fa955`) used its default mask output for the 3 mm fast
+model (297) and all five 1.5 mm standard models (291–295).
+
+Each process loaded the same released weights and wrote its prediction to disk.
+The table gives medians over paired runs in alternating order after one discarded
+warmup per variant. Wall time includes process startup and export. Process memory
+is the macOS peak physical footprint. MLX memory is the allocator peak. The
+paired intervals give optimized time divided by 0.9.0 time, with 96.875%
+confidence for six pairs and 96.14% for twelve.
+
+| Workload | Pairs | Wall time (s), 0.9.0 → optimized | Peak process (GiB) | Peak MLX (MiB) | Paired wall-time ratio interval |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Liver with probabilities | 6 | 204.58 → 184.12 | 9.80 → 6.29 | 3,694 → 2,995 | 0.880–0.978 |
+| TotalSegmentator fast | 12 | 1.010 → 0.915 | 7.07 → 6.35 | 5,439 → 4,509 | 0.883–0.919 |
+| TotalSegmentator standard | 12 | 10.235 → 10.035 | 7.01 → 6.69 | 4,207 → 3,659 | 0.972–0.989 |
+
+Median liver preprocessing fell from 10.36 to 2.39 s and tile inference from
+181.80 to 169.60 s. Restoration and export took 12.12 and 11.82 s respectively.
+The optimized wheel finished sooner in all six liver pairs. TotalSegmentator
+standard's interval spans the prespecified 2% wall-time improvement threshold.
+
+The compiled tile update weights and adds scores in float32 before rounding once
+to float16. Unmirrored FP16 label prediction queues the next network pass after
+submitting that update to the accumulation window. This releases the previous
+tile's scores while the next forward can still overlap label reduction.
+In a separate six-round comparison on TotalSegmentator fast, the later submission
+reduced peak MLX memory by another 311 MiB.
+
+Both TotalSegmentator masks and the liver mask matched 0.9.0 voxel for voxel on
+the original CT grid. All 77,856,768 float32 liver probabilities were bitwise
+identical, and their geometry sidecars matched. Against nnU-Net 2.8.1 on CPU,
+the liver and tumor masks each had Dice 1.0 across 25,952,256 voxels. Absolute
+probability differences had a maximum of 9.39e-4 and a mean of 6.86e-10.
+
+A single liver pair before these optimizations compared 0.9.0 with `32d3331`,
+which already included the single-channel convolution and earlier tile release.
+Wall time was 206.48 → 208.83 s, peak process memory was 9.79 → 8.76 GiB and
+peak MLX memory was 3,694 → 3,003 MiB. The saved outputs matched.
+An earlier six-pair build with the optimized probability path, before the
+label-only scheduling change, gave 209.62 → 195.33 s and a wider paired
+wall-time ratio interval of 0.854–1.180.
+
+### Eight-view convolution on HCC_063
+
+The saved wheel from the preceding comparison supplied the baseline for this
+experiment. Both builds used the same M5 Max, CT, fold, step fraction and
+probability export. Each view runs four full-resolution 32→32 convolutions,
+one in the encoder, two on the separate decoder inputs and one after their sum.
+The revised Metal kernel computes all 32 output channels for 16 adjacent voxels
+per SIMD group. It preserves the order of MLX’s float32 matrix products over
+16-channel blocks and the 27 spatial taps.
+
+After 12 warmup tiles from the CT, a GPU capture recorded one complete 128³ tile
+with all eight views. The table ranks the leading MLX float32 3-D implicit-GEMM
+kernels by GPU time in serial replay. Decoder weight copies were submitted
+separately for timing. Single-kernel command buffers accounted for 99.13% of
+the 709.49 ms measured on the GPU.
+
+| Metal output block (rows × columns) | Dispatches | Total GPU time (ms) | Share |
+| --- | ---: | ---: | ---: |
+| 32 × 32 | 32 | 271.20 | 38.2% |
+| 64 × 64 | 56 | 197.37 | 27.8% |
+| 32 × 64 | 88 | 74.85 | 10.5% |
+
+Across four paired fresh processes per build, the median complete mirrored tile
+took 773.7 ms with the saved wheel and 732.2 ms with the revised convolution.
+All 31,457,280 float32 logits matched bit for bit across five real tiles.
+
+The full-CT comparisons interleaved fresh processes under the shared GPU lock,
+with one discarded warmup per build. The table gives median wall time and
+median per-process peaks, from the saved wheel to the revised kernel. The final
+column is the paired-sign interval for revised wall time divided by saved-wheel
+time, with 96.875% confidence for six pairs and 96.14% for twelve.
+
+| HCC_063 workload | Pairs | Wall time (s) | Peak process (GiB) | Peak MLX (MiB) | Paired time ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Liver, eight views and probabilities | 6 | 186.325 → 179.430 | 6.277 → 6.271 | 2,995.09 → 2,995.20 | 0.899–0.997 |
+| TotalSegmentator fast (297) | 12 | 0.990 → 0.985 | 6.351 → 6.352 | 4,509.03 → 4,509.03 | 0.990–1.040 |
+| Standard, all five parts | 6 | 10.730 → 10.720 | 6.677 → 6.674 | 3,658.80 → 3,658.80 | 0.935–1.043 |
+| Organs (291) | 6 | 2.840 → 2.845 | 6.544 → 6.541 | 3,497.76 → 3,497.76 | 0.961–1.071 |
+| Vertebrae (292) | 6 | 2.745 → 2.700 | 6.659 → 6.659 | 3,539.70 → 3,539.71 | 0.899–1.041 |
+| Cardiac (293) | 6 | 2.680 → 2.700 | 6.189 → 6.189 | 3,372.01 → 3,372.01 | 0.981–1.085 |
+| Muscles (294) | 6 | 2.670 → 2.675 | 6.483 → 6.481 | 3,476.80 → 3,476.80 | 0.989–1.027 |
+| Ribs (295) | 6 | 2.685 → 2.690 | 6.658 → 6.657 | 3,539.71 → 3,539.71 | 0.978–1.041 |
+
+The revised kernel finished sooner in all six liver pairs, saving 0.51–18.80 s
+per pair. Median tile inference fell from 171.63 to 164.67 s. The highest
+process footprint across the six runs was 6.288 GiB for the saved wheel and
+6.292 GiB for the revised kernel. All 25,952,256 labels and all 77,856,768
+float32 probability bit patterns matched. The probability properties files
+were identical. The masks retained the CT dimensions, affine, qform and sform.
+TotalSegmentator uses ordered float32 arithmetic. Its fast, merged standard
+and five individual part masks matched voxel for voxel, and each wall-time
+interval included 1.0.
+
+### One view on HCC_063
+
+With `use_mirroring=False`, the saved wheel completed one fresh-process run in
+33.17 s, 150.95 s faster than its recorded eight-view median of 184.12 s. The
+two masks had Dice of 0.99145 for liver and 0.97815 for tumor. Against the
+HCC_063 DICOM SEG Mass annotation, tumor Dice was 0.82002 with one view and
+0.81830 with eight. Both predictions overlapped both annotated components using
+six-neighbor connectivity. The revised convolution reproduced the one-view mask
+and probabilities bit for bit in a 35.20 s repeat. The default uses eight views.
+
 ## MLX buffer-cache sweep
 
 The AMOS22 `amos_0008` pancreas run spent most of its peak process footprint
@@ -498,8 +611,8 @@ snapshot during restoration attributed 12.18 GiB to graphics
 and 8.64 GiB to large malloc regions at a footprint of 20.98 GiB. The initial
 probe peaked at 21.65 GiB during restoration, with 11.78 GiB cached.
 
-The host retains a 431 MiB float32 network input and 646 MiB of float16 logits
-through restoration. Export also holds 682 MiB of restored float32 probabilities,
+In this run, the host retained a 431 MiB float32 network input and 646 MiB of
+float16 logits through restoration. Export also held 682 MiB of float32 probabilities,
 114 MiB of uint16 labels and a 227 MiB int32 mask read back for validation.
 Large malloc regions also cover resampling workspace and pages retained by
 the host allocator.
@@ -513,9 +626,8 @@ Host restoration and export still set the peak. The anisotropic resampler
 used a 2.22 GiB float64 in-plane workspace. Later, the 682 MiB resampled
 logits and the 682 MiB probability volume were live together during decoding.
 At read-back, 9.45 GiB of the footprint lay outside the active and cached MLX
-totals. The 431 MiB preprocessed CT can be released once inference finishes
-if the export path retains its geometry and shape. The effect of that lifetime
-change on process footprint has yet to be measured.
+totals. Single-case prediction now releases the preprocessed CT when inference
+finishes and retains its geometry and shape for export.
 
 ### Paired results
 

@@ -17,7 +17,7 @@ from nnunet_mlx.runtime import InferenceRuntime, import_mlx
 from nnunet_mlx.runtime_types import ScatterUpdate
 
 if TYPE_CHECKING:
-    from mlx.core import array
+    from mlx.core import Dtype, array
 
     from nnunet_mlx.model.types import PredictionModel
 
@@ -101,15 +101,22 @@ def nnunet_fp16_gaussian(patch_size: tuple[int, ...]) -> npt.NDArray[np.float16]
     so the maximum is 10 (upstream's ``value_scaling_factor``) and cast to float16.
     Entries that round to zero take the smallest nonzero value.
     """
-    gaussian_filter = cast(
-        Callable[..., npt.NDArray[np.float64]], import_module("scipy.ndimage").gaussian_filter
+    gaussian_filter1d = cast(
+        Callable[..., npt.NDArray[np.float64]], import_module("scipy.ndimage").gaussian_filter1d
     )
-
-    impulse = np.zeros(patch_size)
-    impulse[tuple(size // 2 for size in patch_size)] = 1
-    weights = gaussian_filter(impulse, [size / 8 for size in patch_size], mode="constant")
-    rounded = (weights / (weights.max() / 10)).astype(np.float16)
-    rounded[rounded == 0] = rounded[rounded != 0].min()
+    # A centered impulse has one nonzero tap in each axis pass. The outer
+    # products reproduce SciPy's float64 multiplications in the same order.
+    weights = np.ones((), dtype=np.float64)
+    for size in patch_size:
+        impulse = np.zeros(size, dtype=np.float64)
+        impulse[size // 2] = 1
+        profile = gaussian_filter1d(impulse, size / 8, mode="constant")
+        weights = np.multiply.outer(weights, profile)
+    weights /= weights[tuple(size // 2 for size in patch_size)] / 10
+    rounded = weights.astype(np.float16)
+    zeros = rounded == 0
+    if zeros.any():
+        rounded[zeros] = rounded.min(where=~zeros, initial=np.float16(10))
     return rounded
 
 
@@ -175,6 +182,7 @@ def predict_host_logits(
     mx, _ = import_mlx()
     upstream_fp16 = accumulation == "nnunet-fp16"
     dtype = mx.float16 if upstream_fp16 else mx.float32
+    normalize = _slab_normalizer(dtype)
     cropped_shape = tuple(int(item.stop - item.start) for item in crop)
     shape = (num_classes, *cropped_shape)
     output: LogitArray = (
@@ -199,7 +207,7 @@ def predict_host_logits(
 
         def finalize(start: int, stop: int, logits: array, normalizer: array) -> None:
             """Normalize and copy a completed logits slab to the output array."""
-            normalized = (logits.astype(mx.float32) / normalizer.astype(mx.float32)).astype(dtype)
+            normalized = normalize(logits, normalizer)
             mx.eval(normalized)
             while pending:
                 pending.pop().result()
@@ -235,6 +243,7 @@ def predict_device_logits(
     padded, crop = _pad_minimum(data_channels_first, patch)
     mx, _ = import_mlx()
     dtype = mx.float16 if accumulation == "nnunet-fp16" else mx.float32
+    normalize = _slab_normalizer(dtype)
     # Each finished slab is written in place, so the volume, the accumulation
     # window and one slab bound device score memory.
     volume = mx.zeros((*padded.shape[1:], num_classes), dtype=dtype)
@@ -242,7 +251,7 @@ def predict_device_logits(
     def finalize(start: int, stop: int, logits: array, normalizer: array) -> None:
         """Collect a normalized logits slab on the device."""
         nonlocal volume
-        normalized = (logits.astype(mx.float32) / normalizer.astype(mx.float32)).astype(dtype)
+        normalized = normalize(logits, normalizer)
         mx.eval(normalized)
         volume[start:stop] = normalized
         del normalized
@@ -281,6 +290,7 @@ def add_fold_device_logits(
     padded, crop = _pad_minimum(data_channels_first, patch)
     mx, _ = import_mlx()
     finite = mx.array(True)
+    normalize = _slab_normalizer(total.dtype)
 
     def finalize(start: int, stop: int, logits: array, normalizer: array) -> None:
         """Add a completed fold logits slab to the device accumulator."""
@@ -289,7 +299,7 @@ def add_fold_device_logits(
         lower, upper = max(start, first.start), min(stop, first.stop)
         if lower >= upper:
             return
-        normalized = (logits.astype(mx.float32) / normalizer.astype(mx.float32)).astype(total.dtype)
+        normalized = normalize(logits, normalizer)
         selected = normalized[(slice(lower - start, upper - start), *crop[1:])]
         destination = slice(lower - first.start, upper - first.start)
         finite = finite & mx.all(mx.isfinite(selected))
@@ -346,6 +356,7 @@ def predict_labels(
     _accumulate_logits(
         model, padded, patch=patch, axes=axes, num_classes=num_classes,
         step_fraction=step_fraction, accumulation=accumulation, finalize=finalize,
+        finish_update_first=not axes and accumulation == "nnunet-fp16",
     )
     cropped = mx.concatenate(slabs, axis=0)[crop]
     # The host-logit path also excludes minimum padding before checking finiteness.
@@ -354,6 +365,23 @@ def predict_labels(
     if not bool(finite.item()):
         raise ContractError("sliding-window inference produced non-finite logits")
     return np.asarray(cropped, dtype=np.uint16)
+
+
+@lru_cache(maxsize=2)
+def _slab_normalizer(dtype: Dtype) -> Callable[[array, array], array]:
+    """Compile float32 division and the final cast without a full float32 slab."""
+    mx, _ = import_mlx()
+
+    def normalize(logits: array, weights: array) -> array:
+        return (logits.astype(mx.float32) / weights.astype(mx.float32)).astype(dtype)
+
+    return mx.compile(normalize, shapeless=True)
+
+
+def _add_weighted_tile(window: array, scores: array, weights: array) -> array:
+    """Weight and add in float32 before rounding to the accumulator dtype."""
+    weighted = scores * weights.astype(scores.dtype)
+    return (window.astype(scores.dtype) + weighted).astype(window.dtype)
 
 
 def _accumulate_logits(
@@ -366,6 +394,7 @@ def _accumulate_logits(
     step_fraction: float,
     accumulation: str,
     finalize: Callable[[int, int, array, array], None],
+    finish_update_first: bool = False,
 ) -> None:
     """Accumulate Gaussian-weighted tiles, finalizing first-axis slabs as they complete.
 
@@ -394,7 +423,7 @@ def _accumulate_logits(
     origin = 0
     weights = nnunet_fp16_gaussian(patch) if upstream_fp16 else gaussian_importance(patch)
     gaussian = mx.array(weights)[..., None]
-    gaussian_float32 = gaussian.astype(mx.float32)
+    add_weighted_tile = mx.compile(_add_weighted_tile, shapeless=True)
     permutation = (*range(1, padded.ndim), 0)
     volume = (mx.array(np.transpose(padded, permutation))
               if isinstance(padded, np.ndarray) else mx.transpose(padded, permutation))
@@ -410,28 +439,32 @@ def _accumulate_logits(
             model, volume[slices][None], axes, inference_runtime, num_classes=num_classes,
         )
 
-    # Keep the next tile's network queued while this tile accumulates, so Metal
-    # does not idle during graph construction; at most two tile graphs are live.
-    # Accumulation still applies tiles in order with unchanged arithmetic.
+    # Overlap graph construction with accumulation for mirrored or logit output.
+    # Unmirrored FP16 label streaming finishes this tile first so its scores
+    # do not overlap the next forward's peak.
     queued = [forward(tiles[0])]
     mx.async_eval(queued[0])
+
+    def queue_next(index: int) -> None:
+        """Submit the next network tile while the current slab is still open."""
+        if index + 1 < len(tiles):
+            queued.append(forward(tiles[index + 1]))
+            mx.async_eval(queued[0])
+
     for index, slices in enumerate(tiles):
         prediction = queued.pop()
         local = (slice(slices[0].start - origin, slices[0].stop - origin), *slices[1:])
         updated = None
         if upstream_fp16:
-            updated = (
-                logits[local].astype(mx.float32) + prediction[0] * gaussian_float32
-            ).astype(dtype)
+            updated = add_weighted_tile(logits[local], prediction[0], gaussian)
             mx.async_eval(updated)
         else:
             logits = cast(ScatterUpdate, logits.at[local]).add(prediction[0] * gaussian)
         # The update retains the operands it needs. Extra Python references
         # can keep tile buffers alive during the next forward.
         del prediction
-        if index + 1 < len(tiles):
-            queued.append(forward(tiles[index + 1]))
-            mx.async_eval(queued[0])
+        if not finish_update_first:
+            queue_next(index)
         if updated is not None:
             # Finishing the tile first drops its view of the window, letting the
             # slice update reuse the buffer instead of copying the whole window.
@@ -440,6 +473,8 @@ def _accumulate_logits(
             del updated
         normalizer = cast(ScatterUpdate, normalizer.at[local]).add(gaussian)
         mx.async_eval(logits, normalizer)
+        if finish_update_first:
+            queue_next(index)
         following = starts[index + 1][0] if index + 1 < len(tiles) else spatial[0]
         if following == starts[index][0]:
             continue

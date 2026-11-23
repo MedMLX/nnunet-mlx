@@ -331,12 +331,16 @@ class ModelFolderPredictor:
         logits, restored, device_restoration_s = self._infer(
             prepared, save_probabilities=save_probabilities, host_logits=logits_path is not None
         )
+        # Restoration needs geometry and metrics need only the shape. Release
+        # the network input before allocating reader-grid probabilities.
+        properties, shape = prepared.properties, tuple(prepared.data.shape)
+        del prepared
         tile_inference_s = perf_counter() - inference_started - device_restoration_s
         export_started = perf_counter()
         files = self._export(
             logits,
             restored,
-            prepared,
+            properties,
             output_prefix,
             save_probabilities=save_probabilities,
             overwrite=overwrite,
@@ -353,12 +357,12 @@ class ModelFolderPredictor:
         padded = tuple(
             max(size, tile)
             for size, tile in zip(
-                prepared.data.shape[-len(patch) :],
+                shape[-len(patch) :],
                 patch,
                 strict=True,
             )
         )
-        slices = prepared.data.shape[1] if len(patch) == 2 and prepared.data.ndim == 4 else 1
+        slices = shape[1] if len(patch) == 2 and len(shape) == 4 else 1
         metrics = PredictionMetrics(
             preprocessing_s,
             tile_inference_s,
@@ -380,7 +384,7 @@ class ModelFolderPredictor:
         return RawPredictionResult(
             files=files,
             folds=self.bundle.folds,
-            preprocessed_shape=tuple(int(value) for value in prepared.data.shape),
+            preprocessed_shape=shape,
             metrics=metrics,
             accumulation=self.predictor.accumulation,
             decoding=self._decoding(save_probabilities),
@@ -580,7 +584,7 @@ class ModelFolderPredictor:
                 files = self._export(
                     logits,
                     restored,
-                    prepared,
+                    prepared.properties,
                     plan.output_prefix,
                     save_probabilities=save_probabilities,
                     overwrite=overwrite,
@@ -745,7 +749,7 @@ class ModelFolderPredictor:
         self,
         logits: LogitArray | None,
         restored: RestoredPrediction | None,
-        prepared: PreparedPredictionInput,
+        properties: Mapping[str, object],
         output_prefix: str | Path,
         *,
         save_probabilities: bool,
@@ -756,7 +760,7 @@ class ModelFolderPredictor:
         if restored is not None:
             return export_prediction(
                 restored,
-                prepared.properties,
+                properties,
                 output_prefix,
                 file_ending=self.bundle.file_ending,
                 image_reader_writer=self.bundle.image_reader_writer,
@@ -767,7 +771,7 @@ class ModelFolderPredictor:
             raise AssertionError("prediction produced neither logits nor restored labels")
         return restore_and_export_prediction(
             logits,
-            prepared.properties,
+            properties,
             output_prefix,
             plans=self.bundle.plans,
             semantics=self.bundle.semantics,

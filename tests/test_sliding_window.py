@@ -96,14 +96,15 @@ def test_2d_volume_logits_match_ordered_slice_stack(
 
 
 @pytest.mark.oracle
-def test_fp16_gaussian_matches_pinned_upstream() -> None:
+@pytest.mark.parametrize("patch", [(31, 38), (112, 112, 128), (128, 128, 128)])
+def test_fp16_gaussian_matches_pinned_upstream(patch: tuple[int, ...]) -> None:
     """Compare the FP16 Gaussian importance map with the pinned source."""
     torch = pytest.importorskip("torch")
     sliding_window = pytest.importorskip("nnunetv2.inference.sliding_window_prediction")
 
-    actual = nnunet_fp16_gaussian((128, 128, 128))
+    actual = nnunet_fp16_gaussian(patch)
     expected = sliding_window.compute_gaussian(
-        (128, 128, 128), value_scaling_factor=10, device=torch.device("cpu")
+        patch, value_scaling_factor=10, device=torch.device("cpu")
     ).numpy()
     assert actual.dtype == np.float16
     assert np.array_equal(actual, expected)

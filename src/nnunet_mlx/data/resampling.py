@@ -30,6 +30,8 @@ ANISOTROPY_THRESHOLD = 3.0
 # volumes stay sequential so peak memory matches one channel at a time.
 _PARALLEL_RESIZE_BYTES = 4 << 30
 _RESIZE_THREADS = min(8, os.cpu_count() or 1)
+# Three float64 coordinate arrays take 6 MiB per worker at this slab size.
+_SPLINE_SLAB_VOXELS = 1 << 18
 
 
 def resize_worker_count(count: int, working_set_bytes: int, *, retained_bytes: int = 0) -> int:
@@ -131,6 +133,7 @@ def resample_probabilities_or_data(
         threshold=contract.separate_z_anisotropy_threshold,
     )
     output_dtype = np.float16 if values.dtype == np.float16 else np.float32
+    slab_depth = max(1, _SPLINE_SLAB_VOXELS // (target_shape[1] * target_shape[2]))
     if contract.function_name == "resample_torch_fornnunet":
         device_result = _resample_torch(
             values, target_shape, axis=axis, contract=contract, is_seg=False,
@@ -154,6 +157,12 @@ def resample_probabilities_or_data(
             order_z=contract.order_z,
             dtype=output_dtype,
         )
+    elif (contract.order in (1, 3) and values.dtype == np.dtype(output_dtype)
+          and target_shape[0] > slab_depth and _RESIZE_THREADS > 1):
+        result = np.empty((len(values), *target_shape), dtype=np.float32)
+        channels = values.astype(output_dtype, copy=False)
+        for channel, destination in zip(channels, result, strict=True):
+            _resize_volume_slabs(channel, destination, contract.order, slab_depth)
     else:
         result = np.empty((len(values), *target_shape), dtype=output_dtype)
         # Float64 input copy, spline coefficients and output per channel.
@@ -170,6 +179,60 @@ def resample_probabilities_or_data(
     if not np.isfinite(result).all():
         raise ContractError("resampling produced non-finite values")
     return np.ascontiguousarray(result, dtype=np.float32)
+
+
+def _resize_volume_slabs(
+    channel: npt.NDArray[np.float16 | np.float32], output: FloatArray, order: int, slab_depth: int,
+) -> None:
+    """Sample skimage's half-pixel grid into disjoint slabs with SciPy.
+
+    Cubic splines need the whole channel to establish their coefficients.
+    Linear interpolation needs only the source planes bracketing each slab.
+    Half logits round from float64 to half before storage in the float32 result.
+    """
+    sample = _map_coordinates()
+    padding = 12 if order == 3 else 0
+    source: HostArray = channel
+    if padding:
+        # scipy.ndimage.zoom pre-pads nearest-boundary cubic splines by 12.
+        spline_filter = cast(
+            Callable[..., npt.NDArray[np.float64]], import_module("scipy.ndimage").spline_filter
+        )
+        source = spline_filter(
+            np.pad(channel.astype(np.float32, copy=False), padding, mode="edge"),
+            order=3, mode="nearest",
+        )
+    axes = tuple(
+        (np.arange(new, dtype=np.float64) + 0.5) * (old / new) - 0.5 + padding
+        for old, new in zip(channel.shape, output.shape, strict=True)
+    )
+    lower, upper = channel.min(), channel.max()
+    half = channel.dtype == np.float16
+
+    def resize_slab(index: int) -> None:
+        """Write one output slab, retaining upstream's clipping and cast order."""
+        start = index * slab_depth
+        stop = min(start + slab_depth, output.shape[0])
+        planes = axes[0][start:stop]
+        data = source
+        if order == 1:
+            first = max(0, int(np.floor(planes[0])))
+            last = min(source.shape[0], int(np.floor(planes[-1])) + 2)
+            data = source[first:last].astype(np.float32, copy=False)
+            planes = planes - first
+        coords = np.empty((3, stop - start, *output.shape[1:]), dtype=np.float64)
+        coords[0] = planes[:, None, None]
+        coords[1] = axes[1][None, :, None]
+        coords[2] = axes[2][None, None, :]
+        dest = output[start:stop]
+        sampled = np.empty(dest.shape, dtype=np.float64) if half else dest
+        sample(data, coords, output=sampled, order=order, mode="nearest", prefilter=False)
+        np.clip(sampled, lower, upper, out=sampled)
+        if half:
+            dest[:] = sampled.astype(np.float16)
+
+    count = (output.shape[0] + slab_depth - 1) // slab_depth
+    _run_indexed(resize_slab, count, _RESIZE_THREADS)
 
 
 def resample_segmentation(

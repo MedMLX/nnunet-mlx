@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 from nnunet_mlx.errors import ContractError
+from nnunet_mlx.kernels.metal_conv3d_32 import conv3d_32
 from nnunet_mlx.kernels.metal_native_norm import instance_norm
 from nnunet_mlx.kernels.metal_single_channel_conv import single_channel_conv3d
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec, SpatialShape
@@ -258,15 +259,30 @@ def _unbiased_convolution(conv: Conv3d, values: array | tuple[array, array]) -> 
     if not isinstance(values, tuple):
         if _single_channel_kernel_applies(conv, values):
             return single_channel_conv3d(values, weight)
-        return mx.conv3d(values, weight, conv.stride, conv.padding, conv.dilation)
+        return _convolve_part(conv, values, weight)
     if not _split_concatenated_input(conv, values):
         concatenated = mx.concatenate(values, axis=-1)
         return mx.conv3d(concatenated, weight, conv.stride, conv.padding, conv.dilation)
     first, second = values
     split = first.shape[-1]
-    return mx.conv3d(
-        first, weight[..., :split], conv.stride, conv.padding, conv.dilation
-    ) + mx.conv3d(second, weight[..., split:], conv.stride, conv.padding, conv.dilation)
+    return _convolve_part(conv, first, weight[..., :split]) + _convolve_part(
+        conv, second, weight[..., split:]
+    )
+
+
+def _convolve_part(conv: Conv3d, values: array, weight: array) -> array:
+    """Use the 32-channel Metal kernel on the qualified 128³ native resolution."""
+    mx = _mx()
+    if (
+        values.shape == (1, 128, 128, 128, 32)
+        and weight.shape == (32, 3, 3, 3, 32)
+        and values.dtype == weight.dtype == mx.float32
+        and _all_ones(conv.stride)
+        and _all_ones(conv.dilation)
+        and _all_ones(conv.padding)
+    ):
+        return conv3d_32(values, weight)
+    return mx.conv3d(values, weight, conv.stride, conv.padding, conv.dilation)
 
 
 def _single_channel_kernel_applies(conv: Conv3d, values: array) -> bool:

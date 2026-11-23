@@ -82,7 +82,7 @@ def test_axis_gather_matches_installed_scipy_half_pixel_mapping(axis: int) -> No
 @pytest.mark.parametrize("dtype", [np.float32, np.float16])
 @pytest.mark.parametrize(
     ("order", "order_z", "force_separate_z"),
-    [(1, 0, False), (3, 0, None), (1, 0, True), (1, 1, True), (3, 1, True)],
+    [(1, 0, False), (3, 0, False), (3, 0, None), (1, 0, True), (1, 1, True), (3, 1, True)],
 )
 def test_float_resampling_matches_pinned_nnunet_bitwise(
     dtype: type[np.float16] | type[np.float32],
@@ -99,8 +99,12 @@ def test_float_resampling_matches_pinned_nnunet_bitwise(
     from nnunet_mlx.data.resampling import resample_probabilities_or_data
 
     source = import_module("nnunetv2.preprocessing.resampling.default_resampling")
-    data = real_image_input((7, 20, 22), 3).astype(dtype)
-    arguments = ((13, 31, 17), (5.0, 1.0, 1.0), (1.0, 0.7, 1.3))
+    # The whole-volume cases span multiple output slabs with mixed axis scales.
+    shape, target = ((97, 101, 37), (111, 93, 39)) if force_separate_z is False else (
+        (7, 20, 22), (13, 31, 17)
+    )
+    data = real_image_input(shape, 3).astype(dtype)
+    arguments = (target, (5.0, 1.0, 1.0), (1.0, 0.7, 1.3))
     expected = source.resample_data_or_seg_to_shape(
         data, *arguments, is_seg=False, order=order, order_z=order_z,
         force_separate_z=force_separate_z,
