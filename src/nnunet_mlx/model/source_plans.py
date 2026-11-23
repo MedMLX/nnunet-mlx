@@ -109,7 +109,7 @@ def normalize_inference_plans(
     *,
     source_profile: str,
     trainer_name: str | None = None,
-    arithmetic: str | None = None,
+    precision: str | None = None,
 ) -> PlansContract:
     """Rebuild the ``architecture`` block that TotalSegmentator v2's legacy plans lack.
 
@@ -134,7 +134,7 @@ def normalize_inference_plans(
         plans_json=plans.raw,
         trainer_name=parse_string(trainer_name, name="trainer name"),
         configuration=plans.configuration.name,
-        arithmetic=arithmetic,
+        precision=precision,
     )
     payload = plans.topology_payload()
     configurations = parse_mapping(payload["configurations"], name="configurations")

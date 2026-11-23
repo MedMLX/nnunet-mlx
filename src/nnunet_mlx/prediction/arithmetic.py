@@ -364,7 +364,7 @@ def _fuse_totalsegmentator_blocks(model: PlainConvUNet) -> None:
 
 def apply_inference_arithmetic(
     model: object,
-    arithmetic: str,
+    precision: str,
     *,
     source_profile: str | None = None,
     patch_size: tuple[int, ...] | None = None,
@@ -376,20 +376,20 @@ def apply_inference_arithmetic(
     a `(640, 640)` patch, and is then pinned to a `(1, 640, 640, 1)` NHWC input.
     Otherwise the model must be a 3-D `PlainConvUNet`; for the TotalSegmentator
     CT profile its convolution blocks are additionally fused. The model is left
-    in evaluation mode with `inference_arithmetic` set.
+    in evaluation mode with `inference_precision` set.
 
     Args:
         model: Loaded network, mutated in place.
-        arithmetic: Must be `SOURCE_FLOAT32`.
+        precision: Must be `SOURCE_FLOAT32`.
         source_profile: Compatibility profile name recorded at conversion, if any.
         patch_size: Plans patch size in voxels, required to match for residual models.
 
     Raises:
-        ContractError: If the arithmetic, topology, profile, patch size, training
+        ContractError: If the precision, topology, profile, patch size, training
             mode, bias/affine settings or float32 parameter dtype is unsupported.
     """
-    if arithmetic != SOURCE_FLOAT32:
-        raise ContractError(f"unsupported inference arithmetic {arithmetic!r}")
+    if precision != SOURCE_FLOAT32:
+        raise ContractError(f"unsupported inference precision {precision!r}")
     residual = isinstance(model, ResidualEncoderUNet)
     totalsegmentator = source_profile == TOTALSEGMENTATOR_CT_SOURCE_PROFILE
     if isinstance(model, ResidualEncoderUNet):
@@ -433,7 +433,7 @@ def apply_inference_arithmetic(
     from mlx import utils
 
     model.update_modules(cast("dict[str, ModuleTree]", utils.tree_unflatten(replacements)))
-    model.inference_arithmetic = arithmetic
+    model.inference_precision = precision
     if isinstance(model, ResidualEncoderUNet):
         model.inference_source_profile = source_profile
         model.inference_input_shape = (1, 640, 640, 1)

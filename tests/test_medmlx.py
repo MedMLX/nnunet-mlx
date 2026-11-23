@@ -301,13 +301,13 @@ def test_loaded_liver_model_matches_isolated_cases_and_bounds_model_memory(
     def counted_load(
         model_folder: str | Path, *, configuration: str, folds: Sequence[int | str] | None = None,
         checkpoint_name: str = "checkpoint_final",
-        source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE, arithmetic: str = "fast-fp32",
+        source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE, precision: str = "fast-fp32",
     ) -> model_folder.ModelBundle:
         nonlocal loads
         loads += 1
         return original_load(model_folder, configuration=configuration, folds=folds,
                              checkpoint_name=checkpoint_name, source_profile=source_profile,
-                             arithmetic=arithmetic)
+                             precision=precision)
 
     monkeypatch.setattr(model_folder, "load_model_bundle", counted_load)
     prepared = liver.load_model(weights_path=str(folder))

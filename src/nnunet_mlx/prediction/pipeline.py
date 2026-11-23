@@ -196,7 +196,7 @@ class ModelFolderPredictor:
     ) -> None:
         """Configure the model bundle, sliding-window settings and compilation policy."""
         self.bundle = bundle
-        if bundle.arithmetic != "fast-fp32" and compile_models:
+        if bundle.precision != "fast-fp32" and compile_models:
             raise ContractError("ordered inference arithmetic requires compile_models=False")
         self.compilation_enabled = compile_models
         models = (
@@ -843,7 +843,7 @@ class ModelFolderPredictor:
         """JSON-native description of everything that determines a case's output.
 
         Stored as the completion receipt so ``continue_existing`` reruns only when
-        inputs, model, settings or arithmetic changed.
+        inputs, model, settings or precision changed.
         """
         # Receipts round-trip through JSON, so every value must be JSON-native.
         regions_class_order = self.bundle.semantics.regions_class_order
@@ -871,7 +871,7 @@ class ModelFolderPredictor:
             ),
             "checkpoints": [provenance.to_payload() for provenance in self.bundle.checkpoints],
             "folds": list(self.bundle.folds),
-            "arithmetic": self.bundle.arithmetic,
+            "precision": self.bundle.precision,
             "compiled": self.compilation_enabled,
             "save_probabilities": save_probabilities,
             "decoding": self._decoding(save_probabilities),

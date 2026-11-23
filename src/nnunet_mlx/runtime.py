@@ -177,7 +177,7 @@ def compile_inference_model[I, O](model: Callable[[I], O]) -> Callable[[I], O]:
 def inference_compilation_eligible(model: object) -> bool:
     """Return whether exact compiled inference is qualified for this class scale."""
 
-    if getattr(model, "inference_arithmetic", "fast-fp32") != "fast-fp32":
+    if getattr(model, "inference_precision", "fast-fp32") != "fast-fp32":
         return False
     spec = getattr(model, "spec", None)
     return hasattr(model, "state") and (
@@ -192,11 +192,11 @@ def validate_inference_execution(model: object) -> None:
     spec = getattr(model, "spec", None)
     if (
         isinstance(spec, ResidualEncoderUNetSpec)
-        and getattr(model, "inference_arithmetic", "fast-fp32") != "fast-fp32"
+        and getattr(model, "inference_precision", "fast-fp32") != "fast-fp32"
     ):
         execution_state = cast(InferenceExecutionState, model)
         if (
-            getattr(model, "inference_arithmetic", None) == "source-fp32"
+            getattr(model, "inference_precision", None) == "source-fp32"
             and getattr(model, "inference_source_profile", None) == SMILE_SOURCE_PROFILE
             and getattr(model, "inference_input_shape", None) == (1, 640, 640, 1)
             and not execution_state.training

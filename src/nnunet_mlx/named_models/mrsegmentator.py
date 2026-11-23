@@ -24,10 +24,10 @@ def run(
     *, image_path: PathLike, output_dir: PathLike, weights_path: PathLike | None = None,
     overwrite: bool = False, fast: bool = False, fold: int | None = None,
 ) -> RunResult:
-    """Segment MR with the original MRSegmentator 1.2 base profile and arithmetic.
+    """Segment MR with the original MRSegmentator 1.2 base profile and precision.
 
     Default inference averages all five folds. ``fast=True`` selects fold 0;
-    an explicit fold takes precedence. Mirroring stays disabled, and arithmetic
+    an explicit fold takes precedence. Mirroring stays disabled, and precision
     remains ``source-fp32``. Invalid folds fail before downloading.
 
     Args:
