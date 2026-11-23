@@ -12,9 +12,8 @@ from nnunet_mlx.plans import InterpolationMode, ResamplingContract, Segmentation
 from nnunet_mlx.runtime import import_mlx
 
 if TYPE_CHECKING:
+    from medmlx_core.typing import MetalKernel
     from mlx.core import array
-
-    from nnunet_mlx.kernels.types import MetalKernel
 
 # NumPy rounds the coordinate multiply before subtracting 0.5. Contraction
 # would change sample locations, and reassociation breaks double-single math.

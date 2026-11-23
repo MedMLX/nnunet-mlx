@@ -59,9 +59,9 @@ class Conv2d(Module):
 class Conv3d(Module):
     weight: array
     bias: array
-    stride: tuple[int, ...]
-    padding: tuple[int, ...]
-    dilation: tuple[int, ...]
+    stride: tuple[int, int, int]
+    padding: tuple[int, int, int]
+    dilation: int | tuple[int, int, int]
     def __init__(
         self,
         in_channels: int,

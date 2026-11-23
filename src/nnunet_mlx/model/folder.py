@@ -44,7 +44,7 @@ class ModelBundle:
     input modalities in dataset.json; ``input_channels`` additionally counts the
     one-hot previous-stage channels of a cascade model. ``mirroring_axes`` are the
     spatial axes (plans axis order) used for test-time mirroring; the empty tuple
-    disables it. ``arithmetic`` is ``"fast-fp32"`` or ``"source-fp32"``.
+    disables it. ``precision`` is ``"fast-fp32"`` or ``"source-fp32"``.
     """
 
     folder: Path
@@ -59,7 +59,7 @@ class ModelBundle:
     image_channels: int
     input_channels: int
     image_reader_writer: str
-    arithmetic: str = "fast-fp32"
+    precision: str = "fast-fp32"
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +91,7 @@ def load_model_bundle(
     folds: Sequence[int | str] | None = None,
     checkpoint_name: str = "checkpoint_final",
     source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE,
-    arithmetic: str = "fast-fp32",
+    precision: str = "fast-fp32",
 ) -> ModelBundle:
     """Load and verify a converted MLX model folder.
 
@@ -105,7 +105,7 @@ def load_model_bundle(
         checkpoint_name: MLX checkpoint directory name inside each fold folder.
         source_profile: Name of the admitted model-identity profile the checkpoint
             identity is checked against.
-        arithmetic: ``"fast-fp32"``, or ``"source-fp32"`` to follow the pinned
+        precision: ``"fast-fp32"``, or ``"source-fp32"`` to follow the pinned
             PyTorch CPU float32 operation order on Metal.
 
     Raises:
@@ -114,8 +114,8 @@ def load_model_bundle(
             fold, configuration or profile, an upstream ``.pth`` file is given
             instead of a converted checkpoint, or the folds disagree on mirroring.
     """
-    if arithmetic not in {"fast-fp32", "source-fp32"}:
-        raise ContractError(f"unsupported inference arithmetic {arithmetic!r}")
+    if precision not in {"fast-fp32", "source-fp32"}:
+        raise ContractError(f"unsupported inference precision {precision!r}")
     folder = Path(model_folder)
     profile = resolve_inference_source_profile(source_profile)
     if not folder.is_dir():
@@ -144,7 +144,7 @@ def load_model_bundle(
         plans = normalize_inference_plans(
             plans, source_profile=profile.name,
             trainer_name=_string(identity.get("trainer_name"), name="trainer name"),
-            arithmetic=arithmetic,
+            precision=precision,
         )
     topology_plans = plans.topology_payload()
     model = model_factory.build_model_from_plans(
@@ -170,7 +170,7 @@ def load_model_bundle(
             fold=fold,
             plans_json=plans_json,
             source_profile=profile,
-            arithmetic=arithmetic,
+            precision=precision,
         )
         models.append(
             model
@@ -194,12 +194,12 @@ def load_model_bundle(
     # All folds share one network: the loop above leaves the last fold's weights
     # resident, which ``activation`` records so the wrappers can skip a reload.
     model.eval()
-    if arithmetic != "fast-fp32":
+    if precision != "fast-fp32":
         from nnunet_mlx.prediction.arithmetic import apply_inference_arithmetic
 
         apply_inference_arithmetic(
             model,
-            arithmetic,
+            precision,
             source_profile=profile.name,
             patch_size=tuple(plans.configuration.patch_size),
         )
@@ -223,7 +223,7 @@ def load_model_bundle(
         image_channels=image_channels,
         input_channels=input_channels,
         image_reader_writer=image_reader_writer,
-        arithmetic=arithmetic,
+        precision=precision,
     )
 
 
@@ -247,16 +247,16 @@ def _validate_checkpoint_identity(
     fold: int | str,
     plans_json: Mapping[str, object],
     source_profile: InferenceSourceProfile,
-    arithmetic: str,
+    precision: str,
 ) -> None:
-    """Require a checkpoint's identity to match its folder, source profile and arithmetic."""
+    """Require a checkpoint's identity to match its folder, source profile and precision."""
     identity = state.identity
     validate_inference_model_identity(
         source_profile,
         plans_json=plans_json,
         trainer_name=identity.trainer_name,
         configuration=identity.configuration,
-        arithmetic=arithmetic,
+        precision=precision,
     )
     if identity.configuration != configuration or identity.fold != fold:
         raise ContractError("checkpoint configuration or fold does not match its folder")

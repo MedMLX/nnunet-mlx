@@ -84,7 +84,7 @@ with load_model() as model:
 - **BraTS** averages five folds; `fold=` selects one. It keeps the original BAMF labels:
   background 0, edema 1, non-enhancing 2, empty 3, enhancing 4.
 - **MRSegmentator** averages five folds; `fast=True` uses fold 0 and `fold=` selects
-  one. It runs without mirroring, with `source-fp32` arithmetic.
+  one. It runs without mirroring, with `source-fp32` precision.
 
 **SIAM** v0.3 is the contrast-agnostic head tissue model by Valabregue et al.
 ([repository](https://github.com/romainVala/SIAM), [paper](https://arxiv.org/abs/2605.02737)),
@@ -220,7 +220,7 @@ Models trained with `nnUNetTrainer` or a variant that builds the network from th
 use the default profile. Released models from other trainers need the profile for their
 exact dataset, trainer and configuration, selected with `--source-profile` or
 `source_profile=`. Profiles marked `source-fp32` also need
-`--arithmetic source-fp32`, or `precision="source-fp32"` in Python. Loading
+`--precision source-fp32`, or `precision="source-fp32"` in Python. Loading
 checks each checkpoint's trainer, configuration and plans against the selected profile. Profiles cover inference only, not training or
 segmentation quality.
 

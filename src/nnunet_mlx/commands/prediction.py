@@ -82,10 +82,10 @@ def model_predict_command(
             help="Explicit source-bound model identity profile.",
         ),
     ] = DEFAULT_INFERENCE_SOURCE_PROFILE,
-    arithmetic: Annotated[
+    precision: Annotated[
         str,
         typer.Option(
-            "--arithmetic",
+            "--precision",
             help="fast-fp32, or source-fp32: MLX on Metal in the pinned Torch rounding order.",
         ),
     ] = "fast-fp32",
@@ -120,7 +120,7 @@ def model_predict_command(
         folds=folds,
         checkpoint_name=checkpoint_name,
         source_profile=source_profile,
-        arithmetic=arithmetic,
+        precision=precision,
         disable_mirroring=disable_mirroring,
     )
     from nnunet_mlx.medmlx import predictor
@@ -191,10 +191,10 @@ def model_predict_folder_command(
             help="Explicit source-bound model identity profile.",
         ),
     ] = DEFAULT_INFERENCE_SOURCE_PROFILE,
-    arithmetic: Annotated[
+    precision: Annotated[
         str,
         typer.Option(
-            "--arithmetic",
+            "--precision",
             help="fast-fp32, or source-fp32: MLX on Metal in the pinned Torch rounding order.",
         ),
     ] = "fast-fp32",
@@ -254,7 +254,7 @@ def model_predict_folder_command(
         folds=folds,
         checkpoint_name=checkpoint_name,
         source_profile=source_profile,
-        arithmetic=arithmetic,
+        precision=precision,
         disable_mirroring=disable_mirroring,
     )
     from nnunet_mlx.medmlx import predictor
@@ -428,7 +428,7 @@ def _load_selected_model_bundle(
     folds: Sequence[str] | None,
     checkpoint_name: str,
     source_profile: str,
-    arithmetic: str,
+    precision: str,
     disable_mirroring: bool = False,
 ) -> ModelBundle:
     """Load the requested folds and optionally disable test-time mirroring."""
@@ -442,6 +442,6 @@ def _load_selected_model_bundle(
         folds=selected_folds,
         checkpoint_name=checkpoint_name,
         source_profile=source_profile,
-        arithmetic=arithmetic,
+        precision=precision,
     )
     return replace(bundle, mirroring_axes=()) if disable_mirroring else bundle

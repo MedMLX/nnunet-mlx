@@ -10,11 +10,11 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
+from medmlx_core.typing import MetalKernel
 
 from nnunet_mlx.data.resampling import separate_z_axis, validate_spacing
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.kernels.metal_numeric import DOUBLE_SINGLE_HEADER
-from nnunet_mlx.kernels.types import MetalKernel
 from nnunet_mlx.plans import ResamplingContract
 from nnunet_mlx.prediction.restore import (
     resample_class_logits_argmax,

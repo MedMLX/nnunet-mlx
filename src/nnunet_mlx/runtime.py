@@ -10,16 +10,35 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
+from medmlx_core.typing import ArrayConstructor, MlxRuntime, NeuralRuntime, Tree, UtilsRuntime
+
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 from nnunet_mlx.prediction.source import SMILE_SOURCE_PROFILE
-from nnunet_mlx.runtime_types import ArrayConstructor, CoreRuntime, NeuralRuntime
 
 if TYPE_CHECKING:
     from mlx.core import Dtype, array
+    from mlx.nn import (
+        AvgPool2d,
+        AvgPool3d,
+        Conv2d,
+        Conv3d,
+        ConvTranspose2d,
+        ConvTranspose3d,
+        Module,
+    )
 
-type Tree[T] = T | list[Tree[T]] | tuple[Tree[T], ...] | dict[str, Tree[T]]
-type ArrayTree = Tree[array]
+
+class LayerRuntime(NeuralRuntime, Protocol):
+    """Add the ``mlx.nn`` layer classes the network subclasses to core's activations."""
+
+    Module: type[Module]
+    Conv2d: type[Conv2d]
+    Conv3d: type[Conv3d]
+    ConvTranspose2d: type[ConvTranspose2d]
+    ConvTranspose3d: type[ConvTranspose3d]
+    AvgPool2d: type[AvgPool2d]
+    AvgPool3d: type[AvgPool3d]
 
 MLX_VERSION = "0.32.4"
 
@@ -98,7 +117,7 @@ class RuntimeInfo:
         return asdict(self)
 
 
-def import_mlx() -> tuple[CoreRuntime, NeuralRuntime]:
+def import_mlx() -> tuple[MlxRuntime, LayerRuntime]:
     """Import MLX on Apple Silicon with Metal, or fail before model execution."""
 
     if (platform.system(), platform.machine()) != ("Darwin", "arm64"):
@@ -107,7 +126,7 @@ def import_mlx() -> tuple[CoreRuntime, NeuralRuntime]:
 
 
 @lru_cache(maxsize=1)
-def _mlx_dependencies() -> tuple[CoreRuntime, NeuralRuntime]:
+def _mlx_dependencies() -> tuple[MlxRuntime, LayerRuntime]:
     """Import the pinned MLX core and nn modules, requiring exactly ``MLX_VERSION``."""
     from medmlx_core.errors import MissingDependencyError
     from medmlx_core.runtime import import_mlx as import_metal
@@ -123,7 +142,7 @@ def _mlx_dependencies() -> tuple[CoreRuntime, NeuralRuntime]:
     version = _mlx_version()
     if version != MLX_VERSION:
         raise ContractError(f"MLX version {MLX_VERSION} is required, found {version}")
-    return cast(tuple[CoreRuntime, NeuralRuntime], (core, nn))
+    return cast(tuple[MlxRuntime, LayerRuntime], (core, nn))
 
 
 @lru_cache(maxsize=1)
@@ -177,7 +196,7 @@ def compile_inference_model[I, O](model: Callable[[I], O]) -> Callable[[I], O]:
 def inference_compilation_eligible(model: object) -> bool:
     """Return whether exact compiled inference is qualified for this class scale."""
 
-    if getattr(model, "inference_arithmetic", "fast-fp32") != "fast-fp32":
+    if getattr(model, "inference_precision", "fast-fp32") != "fast-fp32":
         return False
     spec = getattr(model, "spec", None)
     return hasattr(model, "state") and (
@@ -192,11 +211,11 @@ def validate_inference_execution(model: object) -> None:
     spec = getattr(model, "spec", None)
     if (
         isinstance(spec, ResidualEncoderUNetSpec)
-        and getattr(model, "inference_arithmetic", "fast-fp32") != "fast-fp32"
+        and getattr(model, "inference_precision", "fast-fp32") != "fast-fp32"
     ):
         execution_state = cast(InferenceExecutionState, model)
         if (
-            getattr(model, "inference_arithmetic", None) == "source-fp32"
+            getattr(model, "inference_precision", None) == "source-fp32"
             and getattr(model, "inference_source_profile", None) == SMILE_SOURCE_PROFILE
             and getattr(model, "inference_input_shape", None) == (1, 640, 640, 1)
             and not execution_state.training
@@ -245,4 +264,4 @@ def tree_flatten[T](tree: Tree[T]) -> list[tuple[str, T]]:
     """Flatten a nested MLX parameter tree into named leaves."""
     from mlx import utils
 
-    return utils.tree_flatten(tree)
+    return cast(UtilsRuntime, utils).tree_flatten(tree)

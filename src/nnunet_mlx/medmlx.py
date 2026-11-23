@@ -369,7 +369,7 @@ def segment_case(
                 folds=selected_folds,
                 checkpoint_name=checkpoint_name,
                 source_profile=source_profile,
-                arithmetic=precision,
+                precision=precision,
             )
         if not use_mirroring:
             bundle = replace(bundle, mirroring_axes=())
@@ -529,7 +529,7 @@ class NnUNetModel:
             bundle = load_model_bundle(
                 options.folder, configuration=configuration, folds=options.folds,
                 checkpoint_name=checkpoint_name, source_profile=options.source_profile,
-                arithmetic=precision,
+                precision=precision,
             )
             if _source_signature(options.folder, checkpoint_name) != self._signature:
                 raise ContractError("Model files changed while loading; load the model again")

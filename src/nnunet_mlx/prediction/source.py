@@ -60,14 +60,14 @@ class InferenceModelIdentity:
     """One admitted combination of plans dataset, upstream trainer and configuration.
 
     ``None`` for ``dataset_name`` or ``configuration`` matches any value.
-    ``required_arithmetic``, when set, is the only inference arithmetic admitted for
+    ``required_precision``, when set, is the only inference precision admitted for
     this model.
     """
 
     dataset_name: str | None
     trainer_name: str
     configuration: str | None
-    required_arithmetic: str | None = None
+    required_precision: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,9 +193,9 @@ def validate_inference_model_identity(
     plans_json: Mapping[str, object],
     trainer_name: str,
     configuration: str,
-    arithmetic: str | None = None,
+    precision: str | None = None,
 ) -> None:
-    """Check supplied model identity fields and, when supplied, execution arithmetic.
+    """Check supplied model identity fields and, when supplied, execution precision.
 
     Matching these metadata fields admits the profile; it does not verify the
     checkpoint's origin or prove numerical parity.
@@ -211,13 +211,13 @@ def validate_inference_model_identity(
         ):
             continue
         if (
-            arithmetic is not None
-            and identity.required_arithmetic is not None
-            and arithmetic != identity.required_arithmetic
+            precision is not None
+            and identity.required_precision is not None
+            and precision != identity.required_precision
         ):
             raise ContractError(
-                f"model {dataset_name!r} requires inference arithmetic "
-                f"{identity.required_arithmetic!r}"
+                f"model {dataset_name!r} requires inference precision "
+                f"{identity.required_precision!r}"
             )
         return
     raise ContractError(

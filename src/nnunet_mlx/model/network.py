@@ -439,7 +439,7 @@ class PlainConvUNet(MlxModule):
         """Build the plain encoder and decoder from a validated topology."""
         super().__init__()
         self.spec = spec
-        self.inference_arithmetic = "fast-fp32"
+        self.inference_precision = "fast-fp32"
         self._build_encoder(spec)
         self._build_decoder(spec)
 
@@ -671,7 +671,7 @@ class ResidualStack(MlxModule):
 class ResidualEncoderUNet(MlxModule):
     """nnU-Net ``ResidualEncoderUNet``: residual stem and stages, plain decoder.
 
-    ``inference_arithmetic``, ``inference_input_shape`` and ``inference_source_profile``
+    ``inference_precision``, ``inference_input_shape`` and ``inference_source_profile``
     are set by ``nnunet_mlx.prediction.arithmetic`` when ordered ``source-fp32``
     arithmetic is applied; when ``inference_input_shape`` is set, other input shapes
     are rejected.
@@ -681,7 +681,7 @@ class ResidualEncoderUNet(MlxModule):
         """Build the residual encoder, stem and plain decoder from the topology."""
         super().__init__()
         self.spec = spec
-        self.inference_arithmetic = "fast-fp32"
+        self.inference_precision = "fast-fp32"
         self.inference_input_shape: tuple[int, ...] | None = None
         self.inference_source_profile: str | None = None
         self.stem = ConvNormAct(

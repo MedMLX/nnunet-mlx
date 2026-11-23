@@ -37,7 +37,7 @@ interpolated outputs stay in the ignored recording.
 Run the released fold configuration on each complete input and retain separate
 label-only and probability-saving reference masks. Include isotropic and anisotropic
 images, class and region heads. Keep model revisions, exact plans/dataset JSON,
-checkpoint sizes and modification times, runtime versions, arithmetic, accumulation,
+checkpoint sizes and modification times, runtime versions, precision, accumulation,
 folds and mirroring settings in the reference and candidate information files. Record
 the candidate Git revision and its patch when the tree has uncommitted changes.
 

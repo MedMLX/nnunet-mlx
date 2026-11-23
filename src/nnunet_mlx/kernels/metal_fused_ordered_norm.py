@@ -11,9 +11,8 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
+    from medmlx_core.typing import MetalKernel
     from mlx.core import array
-
-    from nnunet_mlx.kernels.types import MetalKernel
 
 
 _VARIANCE_PARTIAL_SOURCE = r"""
