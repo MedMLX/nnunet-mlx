@@ -241,7 +241,7 @@ class ConvNorm(MlxModule):
 def _unbiased_convolution(conv: Conv3d, values: array | tuple[array, array]) -> array:
     """Apply ``conv`` without its bias to ``values`` or to a channel-concatenated pair.
 
-    MLX 0.32.4's implicit-GEMM 3-D convolution uses 64-wide output tiles once
+    MLX 0.32.5's implicit-GEMM 3-D convolution uses 64-wide output tiles once
     the input has at least 64 channels and 8192 output voxels, so a decoder
     convolution from two 32-channel inputs to 32 outputs computes twice the
     needed products. For that shape (see ``_split_concatenated_input``) the
@@ -290,7 +290,7 @@ def _single_channel_kernel_applies(conv: Conv3d, values: array) -> bool:
 
     The configuration is the first convolution of the released liver model:
     one float32 input channel to 32 outputs, 3x3x3 kernel, stride 1, padding 1
-    and dilation 1. MLX 0.32.4 pads that input to 16 channels; the direct
+    and dilation 1. MLX 0.32.5 pads that input to 16 channels; the direct
     kernel gave identical bits on CT tiles, other spatial shapes and batch
     sizes, and with unrelated weights. Other output channel counts, some of
     which select different MLX tile sizes, were not compared and keep the
@@ -321,7 +321,7 @@ def _all_ones(setting: int | tuple[int, ...]) -> bool:
 def _split_concatenated_input(conv: Conv3d, parts: tuple[array, array]) -> bool:
     """Return whether per-part convolution avoids MLX's oversized 3-D output tiles.
 
-    Mirrors the tile choice in MLX 0.32.4 ``implicit_gemm_conv_3D_gpu``: 64-row
+    Mirrors the tile choice in MLX 0.32.5 ``implicit_gemm_conv_3D_gpu``: 64-row
     tiles (and therefore 64-column tiles) when the input has at least 64
     channels and the output at least 8192 voxels. With 17 to 32 output channels
     and parts of fewer than 64 channels (multiples of 16, so each part stays on

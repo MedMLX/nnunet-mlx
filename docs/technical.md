@@ -299,7 +299,7 @@ with `prefer_mlx=True` also retains the final image for prediction.
 
 The kernel reuses compensated float32 products for SciPy-style accumulation.
 Power-of-two scaling protects finite extremes, and integer mantissa handling
-preserves subnormal storage. MLX 0.32.4's built-in `Upsample` uses a different
+preserves subnormal storage. MLX 0.32.5's built-in `Upsample` uses a different
 coordinate expression and intermediate rounding, and does not supply the
 nearest-exact and label-selection contract used here.
 
@@ -673,7 +673,7 @@ the host allocator.
 With the experimental 512 MiB limit, the same case peaked at 10.51 GiB during
 read-back. At the peak, MLX held 0.38 GiB active and 0.68 GiB cached. MLX trims
 the cache on allocation, so frees can take it above the configured limit
-between allocations. [MLX 0.32.4 Metal allocator](https://github.com/ml-explore/mlx/blob/v0.32.4/mlx/backend/metal/allocator.cpp#L156-L189)
+between allocations. [MLX 0.32.5 Metal allocator](https://github.com/ml-explore/mlx/blob/v0.32.5/mlx/backend/metal/allocator.cpp#L174-L210)
 
 Host restoration and export still set the peak. The anisotropic resampler
 used a 2.22 GiB float64 in-plane workspace. Later, the 682 MiB resampled
@@ -750,7 +750,7 @@ time. On that CT, 512 MiB and 1 GiB cut peak process footprint by
 
 ## Single-channel first convolution
 
-MLX 0.32.4 zero-pads the input and weight of a 3-D convolution up to a multiple of
+MLX 0.32.5 zero-pads the input and weight of a 3-D convolution up to a multiple of
 16 channels when the input channel count is not a multiple of 16. The first
 convolution of a one-channel model therefore computes sixteen products per kernel tap
 and holds a 16-channel copy of each tile. A convolution from one float32 channel to 32 outputs with
@@ -759,13 +759,15 @@ released liver model, now runs on a Metal kernel: one thread per voxel reads the
 taps once and accumulates every output channel with `fma` in weight order. The bias
 stays in the instance-normalization kernel. Every other convolution keeps `mx.conv3d`.
 
-The kernel returns the bits of `mx.conv3d`. Nine inputs were compared with the
-released liver weights and again with random weights, 824,528,224 output values each
-time, without a differing bit pattern: five 128³ HCC_063 CT tiles (interior, first,
-last, edge, and mirrored on all axes), a 97×153×131 crop, a batch of two, a 64³ array
-with zeros, negative zeros, subnormals and rescaled values, and a random 256×256×192
-array. SIAM and the pancreas model have the same first convolution; their fold-0
-logits on one real patch each (256×256×192 and 192³) are also bitwise unchanged.
+The kernel returns the bits of `mx.conv3d`. On MLX 0.32.5, nine inputs were compared
+with the released liver weights and again with random weights, 943,017,312 output
+values each time, without a differing bit pattern: five 128³ HCC_063 CT tiles
+(interior, first, last, edge, and mirrored on all axes), a 97×153×131 crop, a batch
+of two tiles, a 64³ array with zeros, negative zeros, subnormals and rescaled values,
+and a random 256×256×192 array. SIAM and the pancreas model have the same first
+convolution; their fold-0 logits on one HCC_063 CT patch each (256×256×192 and 192³)
+are also bitwise unchanged, as are the liver fold-0 logits summed over eight mirrored
+passes of one 128³ tile.
 
 Measured on Apple M5 Max, MLX 0.32.4, `MLX_ENABLE_TF32=0` (November 17, 2026). Paired
 runs alternate the two paths in fresh processes under the shared GPU lock for six
@@ -777,6 +779,13 @@ rounds (perfkit, 97% intervals):
 | Peak MLX memory of that convolution, buffer cache cleared | 511 MiB | 383 MiB |
 | One mirrored liver tile (8 passes) | 872.9 ms | 810.1 ms (×0.914-0.940) |
 | Peak MLX memory, one mirrored tile | 2,999 MiB | 2,356 MiB |
+
+MLX 0.32.5 marks the sliced output of its padded small-channel convolution as
+contiguous, so the normalization kernel no longer copies the `mx.conv3d` output.
+Eight mirrored passes of one 128³ liver tile, each evaluated before the next, peak
+at 2,340 MiB on both paths with MLX 0.32.5, against 2,419 MiB (`mx.conv3d`) and
+2,212 MiB (kernel) with MLX 0.32.4 in the same script. On MLX 0.32.5 the kernel
+saves compute, not tile memory.
 
 The full HCC_063 CT with the released liver weights, fold 0, 0.5 step and eight
 mirrored views (192 tiles, 1,536 network passes), label-only output, as medians and

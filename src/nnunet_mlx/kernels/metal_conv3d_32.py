@@ -28,7 +28,7 @@ _SOURCE = r"""
         for (int n = 0; n < 4; ++n)
             acc[m][n] = metal::simdgroup_float8x8(0.0f);
 
-    // MLX 0.32.4 processes all spatial taps for each block of 16 input channels.
+    // MLX 0.32.5 processes all spatial taps for each block of 16 input channels.
     for (int block = 0; block < 32; block += 16) {
         for (int kz = 0; kz < 3; ++kz) {
             int z = int(z0) + kz - 1;

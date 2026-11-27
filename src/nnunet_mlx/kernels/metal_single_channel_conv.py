@@ -1,6 +1,6 @@
 """Metal 3-D convolution of one input channel with a 3x3x3 kernel.
 
-MLX 0.32.4 sends a 3-D convolution whose input channel count is not a multiple
+MLX 0.32.5 sends a 3-D convolution whose input channel count is not a multiple
 of 16 through ``pad_and_slice_conv_3D_gpu``: it zero-pads the input and the
 weight up to a multiple of 16 channels and runs the implicit GEMM, so a
 one-channel input costs a padded copy sixteen times its size and sixteen
@@ -13,7 +13,7 @@ zero and accumulates its taps with ``fma`` in weight memory order (depth,
 height, width). MLX compiles custom kernels in ``safe`` math mode, so that
 chain is not reassociated. For one input channel and 32 output channels the
 result has the same bits as ``mx.conv3d``. That equality is measured against
-MLX 0.32.4, not guaranteed by its API, so the dispatch in
+MLX 0.32.5, not guaranteed by its API, so the dispatch in
 ``nnunet_mlx.model.network`` is limited to the compared configuration.
 """
 
