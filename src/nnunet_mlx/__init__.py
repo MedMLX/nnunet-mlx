@@ -1,4 +1,4 @@
-"""MLX-native nnU-Net inference.
+"""MLX-native nnU-Net training and inference.
 
 The names in ``__all__`` are the supported Python API. Other modules are
 implementation details and may change between releases.

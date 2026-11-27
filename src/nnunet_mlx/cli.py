@@ -11,12 +11,12 @@ from typing import Annotated
 import typer
 from typer import _click as click
 
-from nnunet_mlx.commands import download, prediction, runtime, upstream
+from nnunet_mlx.commands import download, prediction, runtime, training, upstream
 from nnunet_mlx.errors import ContractError
 
 app = typer.Typer(
     name="nnunet-mlx",
-    help="MLX-native nnU-Net v2 inference.",
+    help="MLX-native nnU-Net training and inference.",
     no_args_is_help=True,
     pretty_exceptions_enable=False,
 )
@@ -25,6 +25,8 @@ app.add_typer(prediction.app, name="model")
 app.command("download")(download.download_command)
 app.command("convert")(upstream.convert_command)
 app.command("predict")(upstream.predict_command)
+app.command("prepare-training")(training.prepare_training_command)
+app.command("train")(training.train_command)
 
 
 def _version_callback(value: bool) -> None:

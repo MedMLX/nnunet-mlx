@@ -9,6 +9,7 @@ from nnunet_mlx.contracts import parse_string
 from nnunet_mlx.errors import ContractError
 
 DEFAULT_INFERENCE_SOURCE_PROFILE = "nnunet-v2.8.1-default"
+NATIVE_TRAINER_NAME = "nnUNetTrainerMLX"
 PROSTATE158_2D_SOURCE_PROFILE = "prostate158-2d-100epochs"
 PROSTATE_MRL_SOURCE_PROFILE = "prostate-mrl-no-mirroring"
 CADS_OAR258_SOURCE_PROFILE = "cads-oar258-open"
@@ -144,8 +145,9 @@ _SOURCE_PROFILES = {
     ),
     DEFAULT_INFERENCE_SOURCE_PROFILE: InferenceSourceProfile(
         name=DEFAULT_INFERENCE_SOURCE_PROFILE,
-        models=tuple(
-            InferenceModelIdentity(None, trainer, None) for trainer in PLANS_BUILT_TRAINERS
+        models=(
+            InferenceModelIdentity(None, NATIVE_TRAINER_NAME, None, "fast-fp32"),
+            *(InferenceModelIdentity(None, trainer, None) for trainer in PLANS_BUILT_TRAINERS),
         ),
     ),
     PROSTATE158_2D_SOURCE_PROFILE: InferenceSourceProfile(

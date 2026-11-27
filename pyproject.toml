@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nnunet-mlx"
 version = "0.10.1"
-description = "Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX"
+description = "Train and run nnU-Net models on Apple Silicon with native MLX"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = "Apache-2.0 AND MIT"

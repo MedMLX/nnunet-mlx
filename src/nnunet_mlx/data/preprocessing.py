@@ -27,6 +27,15 @@ type HostArray = npt.NDArray[np.generic]
 
 
 @dataclass(frozen=True, slots=True)
+class PreprocessingGeometry:
+    """Crop bounds and voxel spacings in the plans' spatial axis order."""
+
+    bounding_box: tuple[tuple[int, int], ...]
+    source_spacing: tuple[float, ...]
+    target_spacing: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PreprocessedRawCase[T = FloatArray]:
     """Preprocessed raw case: ``data`` (C, X, Y, Z) float32 in the plans' axis order and spacing.
 
@@ -41,6 +50,7 @@ class PreprocessedRawCase[T = FloatArray]:
     data: T
     previous_stage: HostArray | None
     properties: dict[str, object]
+    geometry: PreprocessingGeometry
 
 
 @overload
@@ -154,12 +164,10 @@ def preprocess_raw_case(
             configuration.segmentation_resampling,
         )
     )
-    if not isinstance(resampled, np.ndarray):
-        return PreprocessedRawCase(resampled, resampled_previous, result_properties)
-    return PreprocessedRawCase(
-        data=resampled,
-        previous_stage=resampled_previous,
-        properties=result_properties,
+    geometry = PreprocessingGeometry(bounding_box, original_spacing, target_spacing)
+    return cast(
+        "PreprocessedRawCase[FloatArray] | PreprocessedRawCase[array]",
+        PreprocessedRawCase(resampled, resampled_previous, result_properties, geometry),
     )
 
 

@@ -55,8 +55,8 @@ class SpatialInstanceNorm(MlxModule):
 
     Statistics are per sample and per channel, with biased variance, as in
     ``torch.nn.InstanceNorm{2,3}d``; there are no running statistics. ``weight`` and
-    ``bias`` exist only when ``affine`` is true. Float32 input is normalized by the
-    Metal kernels in ``nnunet_mlx.kernels.metal_native_norm``.
+    ``bias`` exist only when ``affine`` is true. Inference uses Metal kernels.
+    Training tracks gradients through MLX reductions and affine operations.
     """
 
     def __init__(self, dims: int, *, eps: float, affine: bool) -> None:
@@ -66,6 +66,7 @@ class SpatialInstanceNorm(MlxModule):
             raise ValueError("instance-normalization epsilon must be positive")
         self.dims = dims
         self.eps = eps
+        self.use_differentiable_ops = False
         if affine:
             mx = _mx()
             self.weight = mx.ones((dims,))
@@ -93,10 +94,34 @@ class SpatialInstanceNorm(MlxModule):
             raise ValueError(
                 f"instance normalization expected {self.dims} channels, got {values.shape[-1]}"
             )
+        if self.differentiable:
+            if input_bias is not None:
+                values = values + input_bias
+            normalized = self._differentiable_normalize(values)
+            if negative_slope is not None:
+                normalized = _nn.leaky_relu(normalized, negative_slope=negative_slope)
+            return normalized
         return instance_norm(
             values, getattr(self, "weight", None), getattr(self, "bias", None), self.eps,
             input_bias=input_bias, negative_slope=negative_slope,
         )
+
+    @property
+    def differentiable(self) -> bool:
+        """Select the native operations with backward support during training."""
+        return self.use_differentiable_ops and self.training
+
+    def _differentiable_normalize(self, values: array) -> array:
+        """Compute per-instance spatial statistics and the affine transform in float32."""
+        mx = _mx()
+        data = values.astype(mx.float32)
+        axes = tuple(range(1, values.ndim - 1))
+        centered = data - mx.mean(data, axis=axes, keepdims=True)
+        variance = mx.mean(mx.square(centered), axis=axes, keepdims=True)
+        normalized = centered * mx.rsqrt(variance + self.eps)
+        if "weight" in self:
+            normalized = normalized * self.weight + self.bias
+        return normalized.astype(values.dtype)
 
 
 class NonOverlappingConvTranspose3d(MlxModule):
@@ -224,7 +249,11 @@ class ConvNorm(MlxModule):
         """
         conv, norm = self.conv, self.norm
         # Ordered arithmetic swaps in a SpatialInstanceNorm subclass, hence the exact type.
-        if isinstance(conv, _nn.Conv3d) and type(norm) is SpatialInstanceNorm:
+        if (
+            isinstance(conv, _nn.Conv3d)
+            and type(norm) is SpatialInstanceNorm
+            and not norm.differentiable
+        ):
             return norm.normalize(
                 _unbiased_convolution(conv, values),
                 input_bias=conv.bias if "bias" in conv else None,
@@ -440,6 +469,7 @@ class PlainConvUNet(MlxModule):
         super().__init__()
         self.spec = spec
         self.inference_precision = "fast-fp32"
+        self.activation_checkpointing = False
         self._build_encoder(spec)
         self._build_decoder(spec)
 
@@ -468,15 +498,18 @@ class PlainConvUNet(MlxModule):
 
     def __call__(self, values: array) -> NetworkOutput:
         """Encode channels-last inputs and decode the highest-resolution logits."""
+        recompute = self.activation_checkpointing and self.training
         skips: list[array] = []
         hidden = values
         for index in range(self._stages):
-            hidden = getattr(self, f"enc{index}")(hidden)
+            stage = cast(MlxModule, getattr(self, f"enc{index}"))
+            hidden = _run_stage(stage, hidden, recompute=recompute)
             skips.append(hidden)
         return _decode(
             self,
             skips,
             self._decoders,
+            recompute=recompute,
         )
 
 
@@ -684,6 +717,7 @@ class ResidualEncoderUNet(MlxModule):
         self.inference_precision = "fast-fp32"
         self.inference_input_shape: tuple[int, ...] | None = None
         self.inference_source_profile: str | None = None
+        self.activation_checkpointing = False
         self.stem = ConvNormAct(
             spec.input_channels,
             spec.effective_stem_channels,
@@ -728,11 +762,13 @@ class ResidualEncoderUNet(MlxModule):
         ):
             raise ContractError("ordered residual inference requires its qualified input shape")
         materialize = _metal_residual_inference_materialization(self)
-        hidden = self.stem(values)
+        recompute = self.activation_checkpointing and self.training
+        hidden = _run_stage(self.stem, values, recompute=recompute)
         _eval_stage(hidden, enabled=materialize)
         skips: list[array] = []
         for index in range(self._stages):
-            hidden = getattr(self, f"res{index}")(hidden)
+            stage = cast(MlxModule, getattr(self, f"res{index}"))
+            hidden = _run_stage(stage, hidden, recompute=recompute)
             _eval_stage(hidden, enabled=materialize)
             skips.append(hidden)
         return _decode(
@@ -741,6 +777,7 @@ class ResidualEncoderUNet(MlxModule):
             self._decoders,
             final_upsample=final_upsample,
             materialize=materialize,
+            recompute=recompute,
         )
 
     def final_upsample(self) -> MlxModule:
@@ -857,6 +894,7 @@ def _decode(
     *,
     final_upsample: ArrayTransform | None = None,
     materialize: bool = False,
+    recompute: bool = False,
 ) -> NetworkOutput:
     """Pop encoder ``skips`` from deepest to shallowest and return the final head.
 
@@ -867,7 +905,6 @@ def _decode(
     references do not retain their buffers after the graph's last use.
     """
     hidden = skips.pop()
-    outputs: list[array] = []
     for index in range(decoders):
         upsample = (
             final_upsample
@@ -883,14 +920,41 @@ def _decode(
         else:
             hidden = _match_spatial(upsample(hidden), skip)
             if type(decoder) is StackedConvs:
-                hidden = decoder.concatenated((hidden, skip))
+                forward = decoder.concatenated
+                if recompute:
+                    forward = _checkpoint(decoder, forward)
+                hidden = forward((hidden, skip))
             else:
                 hidden = decoder(_mx().concatenate((hidden, skip), axis=-1))
         del skip
         _eval_stage(hidden, enabled=materialize)
-        if index == decoders - 1:
-            outputs.append(getattr(owner, f"seg{index}")(hidden))
-    return outputs[0]
+    return getattr(owner, f"seg{decoders - 1}")(hidden)
+
+
+def configure_training_forward(model: Network, *, recompute: bool) -> None:
+    """Select differentiable layers while retaining the native weight layout."""
+    model.activation_checkpointing = recompute
+    for _, layer in model.named_modules():
+        if type(layer) is SpatialInstanceNorm:
+            layer.use_differentiable_ops = True
+    for index in range(len(model.spec.features) - 2):
+        # Lower-resolution heads are retained for strict checkpoint loading.
+        head = cast(MlxModule, getattr(model, f"seg{index}"))
+        head.freeze()
+
+
+def _run_stage(stage: MlxModule, values: array, *, recompute: bool) -> array:
+    """Retain only stage inputs and outputs for the backward pass when requested."""
+    forward = cast(ArrayTransform, stage)
+    if recompute:
+        forward = _checkpoint(stage, forward)
+    return forward(values)
+
+
+def _checkpoint[T](module: MlxModule, forward: Callable[[T], array]) -> Callable[[T], array]:
+    from mlx.nn.utils import checkpoint
+
+    return checkpoint(module, forward)
 
 
 def _metal_residual_inference_materialization(model: ResidualEncoderUNet) -> bool:

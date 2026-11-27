@@ -2,7 +2,7 @@
 
 # nnunet-mlx
 
-Run pretrained nnU-Net v2 models locally on Apple Silicon with native MLX.
+Train and run nnU-Net models on Apple Silicon with native MLX.
 
 [![PyPI](https://img.shields.io/pypi/v/nnunet-mlx)](https://pypi.org/project/nnunet-mlx/)
 [![Python](https://img.shields.io/pypi/pyversions/nnunet-mlx)](https://pypi.org/project/nnunet-mlx/)
@@ -99,7 +99,33 @@ trained on synthetic images.
   selects one fold.
 - **Memory:** a typical head MRI needs about 16 GB, more for larger fields of view.
 
-### Your own trained models
+### Train a model
+
+Install this checkout with `uv pip install -e .`. Put split modalities in
+`imagesTr/<case>_0000.nii.gz`, `imagesTr/<case>_0001.nii.gz`, and so on.
+Put the matching label map in `labelsTr/<case>.nii.gz`. Declare the modalities,
+labels, and file ending in `dataset.json`.
+
+```bash
+nnunet-mlx prepare-training Dataset001_Example prepared
+nnunet-mlx train prepared mlx-model --epochs 100
+nnunet-mlx model predict-folder --model-folder mlx-model \
+  --input-folder Dataset001_Example/imagesTs --output-folder predictions
+```
+
+Preparation uses the training cases to set the voxel spacing and U-Net patch
+geometry. Use `--splits splits_final.json --fold 0` for a predefined split or
+`--plans nnUNetPlans.json` for an existing single-stage plain or residual U-Net. Pass
+`--configuration 2d` to prepare or predict with a 2-D network.
+To train on all cases, pass `--fold all` at preparation and prediction.
+
+`train` uses foreground-aware patch sampling and validates on whole held-out
+cases. `metrics.json` records training loss and foreground Dice. Continue from
+the last completed epoch with `nnunet-mlx train prepared mlx-model --resume --epochs 150`.
+Use `--initialize-from` to start from an MLX checkpoint with the same topology and
+label order. `--precision bfloat16` and `--recompute` reduce training memory.
+
+### Convert a PyTorch-trained model
 
 `nnunet-mlx predict` takes `nnUNetv2_predict`'s options and runs a model you trained
 with nnU-Net. Install the `convert` extra once; it adds PyTorch for reading checkpoints,

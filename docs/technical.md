@@ -1,5 +1,32 @@
 # Technical notes
 
+## Native training
+
+The native planner uses the training split to choose median voxel spacing and patch
+geometry. The trainer reads memory-mapped cases, samples foreground patches, and
+prefetches one batch. AdamW updates the highest-resolution head and its encoder and
+decoder using a Dice and cross-entropy loss. Class targets use indexed reductions
+with no dense one-hot tensor. Region targets use independent sigmoid outputs.
+
+FP32 is the default. BF16 reduces convolution and activation precision while
+keeping the loss, normalization statistics, parameters, and optimizer state in FP32.
+Use `--recompute` to rebuild encoder and decoder stage activations during backward.
+The resume file stores the last completed epoch, model weights, and optimizer state.
+Validation pools Dice over held-out cases on the preprocessed grid with mirroring
+disabled. The final model folder can be passed directly to `model predict-folder`.
+
+The M5 Max test used one 64³ batch-one crop from the HCC-TACE-Seg `HCC_063` CT and
+liver mask. MLX 0.32.5 ran with `MLX_ENABLE_TF32=0`. Each value is a median across
+eight interleaved runs. Update time includes forward, backward, clipping, AdamW,
+and synchronization.
+
+| Training mode | Warm update (ms) | Peak MLX allocation (GiB) |
+| :--- | ---: | ---: |
+| Eager FP32 | 56.7 | 2.73 |
+| Compiled FP32 | 44.4 | 3.97 |
+| Compiled BF16 | 35.9 | 2.26 |
+| Compiled BF16 with recomputation | 43.1 | 1.63 |
+
 ## Accumulation, compilation and arithmetic
 
 The MedMLX runners and the CLI's `predict` and `predict-folder` compute the same thing:

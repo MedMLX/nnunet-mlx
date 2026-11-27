@@ -93,7 +93,7 @@ def load_model_bundle(
     source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE,
     precision: str = "fast-fp32",
 ) -> ModelBundle:
-    """Load and verify a converted MLX model folder.
+    """Load and verify a native MLX model folder.
 
     Args:
         model_folder: Folder with ``plans.json``, ``dataset.json`` and
@@ -163,6 +163,7 @@ def load_model_bundle(
             raise ContractError(
                 "checkpoint must be a native nnunet-mlx safetensors directory"
             )
+        checkpoint = checkpoint.resolve()
         state = load_inference_checkpoint(checkpoint, model=model)
         _validate_checkpoint_identity(
             state,

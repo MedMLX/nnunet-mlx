@@ -20,6 +20,7 @@ from nnunet_mlx.contracts import (
     parse_string as _string,
 )
 from nnunet_mlx.errors import ContractError
+from nnunet_mlx.prediction.source import NATIVE_TRAINER_NAME
 from nnunet_mlx.runtime import import_mlx, tree_flatten
 from nnunet_mlx.storage.filesystem import write_new_directory
 
@@ -35,7 +36,7 @@ _INFERENCE_PAYLOAD_FILES = ("weights.safetensors",)
 
 @dataclass(frozen=True, slots=True)
 class CheckpointIdentity:
-    """Which upstream trainer, plans configuration and fold produced a checkpoint."""
+    """Trainer, plans configuration and fold that produced a checkpoint."""
 
     trainer_name: str
     configuration: str
@@ -80,7 +81,7 @@ class InferenceCheckpointState:
         """Serialize inference identity, source version and inference metadata."""
         return {
             "schema_version": INFERENCE_SCHEMA_VERSION,
-            "source_nnunet_version": SOURCE_NNUNET_VERSION,
+            "source_nnunet_version": _source_version(self.identity),
             "identity": asdict(self.identity),
             "current_epoch": self.current_epoch,
             "spatial_dims": self.spatial_dims,
@@ -96,10 +97,11 @@ class InferenceCheckpointState:
             raise ContractError(
                 f"unsupported inference checkpoint schema {root.get('schema_version')!r}"
             )
-        if root.get("source_nnunet_version") != SOURCE_NNUNET_VERSION:
+        identity = _checkpoint_identity(root.get("identity"))
+        if root.get("source_nnunet_version") != _source_version(identity):
             raise ContractError("inference checkpoint source nnU-Net version does not match")
         return cls(
-            identity=_checkpoint_identity(root.get("identity")),
+            identity=identity,
             current_epoch=(
                 _integer(root["current_epoch"], name="current epoch")
                 if root.get("current_epoch") is not None
@@ -121,7 +123,7 @@ def save_inference_checkpoint(
     model: Module,
     state: InferenceCheckpointState,
 ) -> None:
-    """Atomically create a converted, inference-only MLX checkpoint."""
+    """Atomically create an inference-only MLX checkpoint."""
 
     write_new_directory(
         Path(directory),
@@ -260,6 +262,10 @@ def _validate_spatial_axes(spatial_dims: int, axes: tuple[int, ...]) -> None:
         raise ContractError("checkpoint spatial dimensions must be 2 or 3")
     if len(set(axes)) != len(axes) or any(axis not in range(spatial_dims) for axis in axes):
         raise ContractError(f"invalid checkpoint mirroring axes {axes}")
+
+
+def _source_version(identity: CheckpointIdentity) -> str | None:
+    return None if identity.trainer_name == NATIVE_TRAINER_NAME else SOURCE_NNUNET_VERSION
 
 
 def _checkpoint_identity(value: object) -> CheckpointIdentity:
