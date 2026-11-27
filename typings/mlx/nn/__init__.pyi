@@ -1,4 +1,4 @@
-"""Repository-used MLX 0.32.4 neural-network APIs, from the installed source."""
+"""Repository-used MLX 0.32.5 neural-network APIs, from the installed source."""
 
 from collections.abc import Iterator, Sequence
 from typing import Self

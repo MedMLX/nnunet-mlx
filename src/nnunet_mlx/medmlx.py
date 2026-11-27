@@ -262,7 +262,7 @@ def run(
         AssetNotReadyError: A missing model folder, or one whose files,
             configuration, folds or checkpoints are missing, malformed,
             unsupported, or inconsistent with the selected configuration and profile.
-        MissingDependencyError: MLX is missing, is not version 0.32.4, or has
+        MissingDependencyError: MLX is missing, is not version 0.32.5, or has
             no usable accelerator.
         ModelExecutionError: Reading, predicting or publishing the case failed,
             including images that do not give the model's channel count.

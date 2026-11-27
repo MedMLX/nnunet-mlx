@@ -17,7 +17,7 @@ def main() -> int:
     checks: list[dict[str, object]] = []
     mlx_ready = False
     for package, pinned in (
-        ("mlx", "0.32.4"), ("numpy", "2.5.4"), ("scipy", "1.18.1"),
+        ("mlx", "0.32.5"), ("numpy", "2.5.4"), ("scipy", "1.18.1"),
         ("scikit-image", "0.26.0"), ("nnunetv2", "2.8.1"),
         ("dynamic-network-architectures", "0.4.4"), ("torch", "2.13.0"),
     ):

@@ -1,4 +1,4 @@
-"""MLX 0.32.4 tree utilities used by nnunet-mlx."""
+"""MLX 0.32.5 tree utilities used by nnunet-mlx."""
 
 from collections.abc import Callable
 from typing import overload

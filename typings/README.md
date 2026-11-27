@@ -1,6 +1,6 @@
 These stubs describe the dependency APIs used by nnunet-mlx.
 
-- MLX 0.32.4: python/mlx/nn/layers/base.py, convolution, transpose-convolution
+- MLX 0.32.5: python/mlx/nn/layers/base.py, convolution, transpose-convolution
   and pooling layers, nn/utils.py, and utils.py from the installed pinned
   release. Parameter trees retain their real dictionary/list/tuple containers
   and array leaves. A module's state is the module itself.

@@ -41,7 +41,7 @@ Explicit segmentation tie-breaking follows
 - Source: <https://github.com/ml-explore/mlx>
 - Historical MLX reference recorded for this port: v0.32.3,
   `64ea011cb65f14d9ce2737e60db9a4ae91ed7441`
-- Declared runtime dependency: `mlx==0.32.4` (see `pyproject.toml`).
+- Declared runtime dependency: `mlx==0.32.5` (see `pyproject.toml`).
   This runtime version is separate from the historical source reference above.
 - Derived kernels retain Apple copyright and MIT terms.
 - License: MIT

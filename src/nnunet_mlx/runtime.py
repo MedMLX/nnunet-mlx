@@ -40,7 +40,7 @@ class LayerRuntime(NeuralRuntime, Protocol):
     AvgPool2d: type[AvgPool2d]
     AvgPool3d: type[AvgPool3d]
 
-MLX_VERSION = "0.32.4"
+MLX_VERSION = "0.32.5"
 
 
 class InferenceRuntime(Protocol):
