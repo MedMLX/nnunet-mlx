@@ -31,16 +31,14 @@ def test_scheduled_training_resumes_and_keeps_best_validation_checkpoint(tmp_pat
     raw = tmp_path / "dataset"
     _write_dataset(raw)
     prepared, resumed = (tmp_path / name for name in ("prepared", "resumed"))
-    assert main(["prepare-training", str(raw), str(prepared), "--patch-size", "32x32x32"]) == 0
+    assert main(["prepare-training", str(raw), str(prepared), "--patch-size", "16x16x16"]) == 0
     settings: TrainingOverrides = {
         "steps_per_epoch": 8,
         "validate_every": 1,
         "cosine_lr": True,
-        "balanced_ce": True,
         "focus_label": 1,
         "spatial_augment": True,
         "recompute_stages": 1,
-        "deep_supervision": True,
     }
 
     def interrupt(_: object) -> None:
@@ -87,6 +85,8 @@ def test_native_training_resume_and_nifti_prediction(tmp_path: Path) -> None:
     assert main(["prepare-training", str(raw), str(prepared), "--patch-size", "16x16x16"]) == 0
     args = ["--steps-per-epoch", "8", "--no-augment", "--precision", "bfloat16", "--recompute"]
     assert main(["train", str(prepared), str(run), "--epochs", "1", *args]) == 0
+    saved = parse_mapping(read_json_object(run / "training.json")["settings"], name="settings")
+    assert saved["balanced_ce"] is True
     assert main(["train", str(prepared), str(run), "--resume", "--epochs", "2"]) == 0
     assert main(["train", str(prepared), str(direct), "--epochs", "2", *args]) == 0
 

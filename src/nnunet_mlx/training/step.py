@@ -112,16 +112,6 @@ def _dice_loss(intersection: mx.array, predicted: mx.array, actual: mx.array) ->
     return mx.sum(mx.where(present, 1.0 - dice, 0.0)) / mx.maximum(mx.sum(present), 1)
 
 
-def _downsample_targets(labels: mx.array, shape: tuple[int, ...]) -> mx.array:
-    """Sample voxel centers with nearest-exact indexing, preserving ignored labels."""
-    sampled = labels
-    for axis, (source, target) in enumerate(zip(labels.shape[1:], shape, strict=True), start=1):
-        if source != target:
-            indices = ((2 * mx.arange(target, dtype=mx.int32) + 1) * source) // (2 * target)
-            sampled = mx.take(sampled, indices, axis=axis)
-    return sampled
-
-
 class TrainingStep:
     """Own the compiled graph for a fixed batch shape, model and optimizer."""
 
@@ -135,34 +125,20 @@ class TrainingStep:
         compile_step: bool,
         balanced_ce: bool = False,
         batch_dice: bool = True,
-        deep_supervision: bool = False,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
         loss = segmentation_loss(semantics, balanced_ce=balanced_ce, batch_dice=batch_dice)
 
-        def forward_loss(images: mx.array, labels: mx.array) -> mx.array:
-            if not deep_supervision:
-                return loss(model(images), labels)
-            finest, *auxiliary = model.forward_supervised(images)
-            value = loss(finest, labels)
-            total_weight = 1.0
-            for index, logits in enumerate(auxiliary, start=1):
-                weight = 0.5**index
-                target = _downsample_targets(labels, logits.shape[1:-1])
-                value = value + weight * loss(logits, target)
-                total_weight += weight
-            return value / total_weight
-
         def objective(images: mx.array, labels: mx.array) -> mx.array:
             if precision == "float32":
-                return forward_loss(images, labels)
+                return loss(model(images), labels)
             # Cast inside autodiff so the persistent parameters and AdamW moments stay FP32.
             master = model.trainable_parameters()
             compute = cast("Parameters", tree_map(lambda value: value.astype(mx.bfloat16), master))
             model.update(compute)
             try:
-                return forward_loss(images.astype(mx.bfloat16), labels)
+                return loss(model(images.astype(mx.bfloat16)), labels)
             finally:
                 model.update(master)
 

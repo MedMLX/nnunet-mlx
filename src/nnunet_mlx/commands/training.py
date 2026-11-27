@@ -91,18 +91,11 @@ def train_command(
     focus_label: Annotated[
         int | None, typer.Option(min=1, help="Prioritize this label in foreground sampling.")
     ] = None,
-    balanced_ce: Annotated[
-        bool | None, typer.Option("--balanced-ce", help="Weight class CE by voxel frequency.")
-    ] = None,
     cosine_lr: Annotated[
         bool | None, typer.Option("--cosine-lr", help="Warm up and decay the learning rate.")
     ] = None,
     compile_step: Annotated[
         bool | None, typer.Option("--compile/--eager", help="Compile the training step.")
-    ] = None,
-    deep_supervision: Annotated[
-        bool | None,
-        typer.Option("--deep-supervision", help="Supervise intermediate decoder outputs."),
     ] = None,
     resume: Annotated[bool, typer.Option(help="Resume from the last completed epoch.")] = False,
     initialize_from: Annotated[
@@ -131,10 +124,8 @@ def train_command(
                 "augment": augment,
                 "spatial_augment": spatial_augment,
                 "focus_label": focus_label,
-                "balanced_ce": balanced_ce,
                 "cosine_lr": cosine_lr,
                 "compile_step": compile_step,
-                "deep_supervision": deep_supervision,
             }.items()
             if value is not None
         },

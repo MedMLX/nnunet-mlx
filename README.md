@@ -120,8 +120,10 @@ geometry. Use `--splits splits_final.json --fold 0` for a predefined split or
 To train on all cases, pass `--fold all` at preparation and prediction.
 
 `train` uses foreground-aware patch sampling and validates on whole held-out
-cases. `metrics.json` records training loss and foreground Dice. Continue from
-the last completed epoch with `nnunet-mlx train prepared mlx-model --resume --epochs 150`.
+cases. Class-based training uses Dice and class-weighted cross-entropy.
+Overlapping regions use Dice and binary cross-entropy. `metrics.json` records
+training loss and foreground Dice. Continue from the last completed epoch with
+`nnunet-mlx train prepared mlx-model --resume --epochs 150`.
 To start a new run from saved weights, pass
 `--initialize-from mlx-model/fold_0/checkpoint_best`. Keep the checkpoint with its
 model folder's `plans.json` and `dataset.json`. The prepared dataset must use the
@@ -130,11 +132,8 @@ same network topology and output label order.
 `--precision bfloat16` and `--recompute` reduce training memory.
 Use `--recompute-stages 2` to recompute the two highest-resolution stages in
 each path. `--cosine-lr` adds warmup and cosine decay. `--focus-label 2`
-prioritizes label 2 in foreground sampling, and `--balanced-ce` weights class
-cross-entropy by the inverse square root of patch voxel counts.
-`--spatial-augment` replaces mirroring with small in-plane rotations. The experimental
-`--deep-supervision` option adds loss terms at intermediate decoder resolutions.
-Prediction uses the full-resolution output. Pass
+prioritizes label 2 in foreground sampling. `--spatial-augment` replaces
+mirroring with small in-plane rotations. Pass
 `--checkpoint checkpoint_best` to predict with the best epoch from a run with validation.
 
 ### Convert a PyTorch-trained model

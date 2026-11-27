@@ -5,20 +5,19 @@
 The native planner uses the training split to choose median voxel spacing and patch
 geometry. The trainer reads memory-mapped cases, samples foreground patches, and
 prefetches one batch. AdamW trains the encoder, decoder, and full-resolution
-segmentation head using Dice and cross-entropy loss. Class targets use indexed reductions
-with no dense one-hot tensor. Region targets use independent sigmoid outputs.
+segmentation head using Dice and cross-entropy. For class targets,
+cross-entropy weights each class by the inverse square root of its annotated
+voxel count in the batch. Class targets use indexed reductions without a dense
+one-hot tensor. Region targets use independent sigmoid outputs and binary
+cross-entropy.
 The plans' `batch_dice` setting controls whether soft Dice pools voxels across
 each batch or computes Dice per patch.
-
-Experimental deep supervision adds the same loss at intermediate decoder heads.
-Targets are sampled at each head's voxel centers. The weight halves at each
-coarser resolution, with the coarsest head omitted. Prediction uses the
-full-resolution logits.
 
 FP32 is the default. BF16 reduces convolution and activation precision while
 keeping the loss, normalization statistics, parameters, and optimizer state in FP32.
 Use `--recompute` to rebuild encoder and decoder stage activations during backward.
 The resume file stores the last completed epoch, model weights, and optimizer state.
+Resumed runs retain their recorded class weighting.
 Validation pools Dice over held-out cases on the preprocessed grid with mirroring
 disabled. The final model folder can be passed directly to `model predict-folder`.
 The best checkpoint uses the mean of the pooled foreground Dice scores. The cosine
@@ -63,11 +62,11 @@ Each row reports the checkpoint with the highest mean pooled foreground Dice.
 
 | Objective | Best epoch | Pancreas Dice | Tumor Dice | Wall time (s) | Peak MLX (GiB) |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| Default loss | 24 | 0.557 | 0.000 | 310 | 3.53 |
-| Deep supervision | 24 | 0.570 | 0.000 | 324 | 3.41 |
-| Balanced cross-entropy | 21 | 0.605 | 0.400 | 317 | 3.53 |
+| Unweighted cross-entropy | 24 | 0.557 | 0.000 | 310 | 3.53 |
+| Unweighted cross-entropy with deep supervision | 24 | 0.570 | 0.000 | 324 | 3.41 |
+| Class-weighted cross-entropy | 21 | 0.605 | 0.400 | 317 | 3.53 |
 
-Balanced cross-entropy first produced tumor overlap after 900 updates.
+Class-weighted cross-entropy first produced tumor overlap after 900 updates.
 The comparison used one seed and a single validation split.
 
 ### Decathlon convergence pilot

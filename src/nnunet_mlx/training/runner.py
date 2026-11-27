@@ -52,10 +52,8 @@ class TrainingOverrides(TypedDict, total=False):
     augment: bool
     spatial_augment: bool
     focus_label: int
-    balanced_ce: bool
     cosine_lr: bool
     compile_step: bool
-    deep_supervision: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +72,6 @@ class TrainingSettings:
     focus_label: int | None
     balanced_ce: bool
     cosine_lr: bool
-    deep_supervision: bool
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> TrainingSettings:
@@ -114,7 +111,6 @@ class TrainingSettings:
             None if focus is None else _positive_int(focus, name="focus_label"),
             parse_boolean(payload.get("balanced_ce", False), name="balanced_ce"),
             parse_boolean(payload.get("cosine_lr", False), name="cosine_lr"),
-            parse_boolean(payload.get("deep_supervision", False), name="deep_supervision"),
         )
 
 
@@ -169,6 +165,7 @@ def train_model(
                 "recompute": False,
                 "augment": True,
                 "compile_step": True,
+                "balanced_ce": not data.semantics.has_regions,
             }
             | overrides
         )
@@ -252,7 +249,6 @@ def _build(
         model,
         recompute=settings.recompute,
         recompute_stages=settings.recompute_stages,
-        deep_supervision=settings.deep_supervision,
     )
     model.train()
     rate: float | Callable[[mx.array], mx.array] = settings.learning_rate
@@ -391,7 +387,6 @@ def _run_epochs(
         compile_step=settings.compile_step,
         balanced_ce=settings.balanced_ce,
         batch_dice=data.plans.configuration.batch_dice,
-        deep_supervision=settings.deep_supervision,
     )
     sampler = PatchSampler(
         data,
