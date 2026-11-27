@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING, Literal, cast
 
 from medmlx_core.typing import IndexedUpdates
@@ -26,10 +27,12 @@ type Loss = Callable[[mx.array, mx.array], mx.array]
 _mx, _ = import_mlx()
 
 
-def segmentation_loss(semantics: LabelSemantics) -> Loss:
+def segmentation_loss(semantics: LabelSemantics, *, balanced_ce: bool = False) -> Loss:
     """Create Dice plus cross-entropy, with -1 masking padded and ignored targets."""
     if not semantics.has_regions:
-        return _class_loss
+        return partial(_class_loss, balanced_ce=balanced_ce)
+    if balanced_ce:
+        raise ContractError("balanced cross-entropy requires mutually exclusive class targets")
     membership = mx.array(
         [[label in region for region in semantics.regions] for label in semantics.all_labels],
         dtype=mx.bool_,
@@ -42,7 +45,7 @@ def segmentation_loss(semantics: LabelSemantics) -> Loss:
     return loss
 
 
-def _class_loss(logits: mx.array, labels: mx.array) -> mx.array:
+def _class_loss(logits: mx.array, labels: mx.array, *, balanced_ce: bool) -> mx.array:
     """Gather class targets and reduce small per-tile histograms without one-hot labels."""
     classes = logits.shape[-1]
     scores = mx.reshape(logits, (-1, classes)).astype(mx.float32)
@@ -51,7 +54,7 @@ def _class_loss(logits: mx.array, labels: mx.array) -> mx.array:
     indices = mx.maximum(targets, 0)
     log_probs = scores - mx.logsumexp(scores, axis=-1, keepdims=True)
     true_log_probs = mx.reshape(mx.take_along_axis(log_probs, indices[:, None], axis=-1), (-1,))
-    ce = -mx.sum(mx.where(valid, true_log_probs, 0.0)) / mx.maximum(mx.sum(valid), 1)
+    negative_log_likelihood = -mx.where(valid, true_log_probs, 0.0)
     predicted = mx.sum(mx.where(valid[:, None], mx.exp(log_probs), 0.0), axis=0)
 
     # Independent tiles bound the contention of repeated labels in scatter-add.
@@ -63,6 +66,15 @@ def _class_loss(logits: mx.array, labels: mx.array) -> mx.array:
     scatter = cast(IndexedUpdates, empty.at)[bins]
     inter = mx.sum(mx.reshape(scatter.add(true_prob), (tiles, classes)), axis=0)
     actual = mx.sum(mx.reshape(scatter.add(valid.astype(mx.float32)), (tiles, classes)), axis=0)
+    if balanced_ce:
+        # Inverse-square-root weighting tempers the contribution of tiny classes.
+        weights = mx.rsqrt(mx.maximum(actual, 1))
+        ce = mx.sum(negative_log_likelihood * weights[indices]) / mx.maximum(
+            mx.sum(weights * actual),
+            1.0,
+        )
+    else:
+        ce = mx.sum(negative_log_likelihood) / mx.maximum(mx.sum(valid), 1)
     return ce + _dice_loss(inter[1:], predicted[1:], actual[1:])
 
 
@@ -98,10 +110,11 @@ class TrainingStep:
         *,
         precision: Precision,
         compile_step: bool,
+        balanced_ce: bool = False,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
-        loss = segmentation_loss(semantics)
+        loss = segmentation_loss(semantics, balanced_ce=balanced_ce)
 
         def objective(images: mx.array, labels: mx.array) -> mx.array:
             if precision == "float32":

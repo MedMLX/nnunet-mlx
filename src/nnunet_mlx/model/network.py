@@ -469,7 +469,7 @@ class PlainConvUNet(MlxModule):
         super().__init__()
         self.spec = spec
         self.inference_precision = "fast-fp32"
-        self.activation_checkpointing = False
+        self.activation_checkpointing = 0
         self._build_encoder(spec)
         self._build_decoder(spec)
 
@@ -498,12 +498,12 @@ class PlainConvUNet(MlxModule):
 
     def __call__(self, values: array) -> NetworkOutput:
         """Encode channels-last inputs and decode the highest-resolution logits."""
-        recompute = self.activation_checkpointing and self.training
+        recompute = self.activation_checkpointing if self.training else 0
         skips: list[array] = []
         hidden = values
         for index in range(self._stages):
             stage = cast(MlxModule, getattr(self, f"enc{index}"))
-            hidden = _run_stage(stage, hidden, recompute=recompute)
+            hidden = _run_stage(stage, hidden, recompute=index < recompute)
             skips.append(hidden)
         return _decode(
             self,
@@ -717,7 +717,7 @@ class ResidualEncoderUNet(MlxModule):
         self.inference_precision = "fast-fp32"
         self.inference_input_shape: tuple[int, ...] | None = None
         self.inference_source_profile: str | None = None
-        self.activation_checkpointing = False
+        self.activation_checkpointing = 0
         self.stem = ConvNormAct(
             spec.input_channels,
             spec.effective_stem_channels,
@@ -762,13 +762,13 @@ class ResidualEncoderUNet(MlxModule):
         ):
             raise ContractError("ordered residual inference requires its qualified input shape")
         materialize = _metal_residual_inference_materialization(self)
-        recompute = self.activation_checkpointing and self.training
-        hidden = _run_stage(self.stem, values, recompute=recompute)
+        recompute = self.activation_checkpointing if self.training else 0
+        hidden = _run_stage(self.stem, values, recompute=recompute > 0)
         _eval_stage(hidden, enabled=materialize)
         skips: list[array] = []
         for index in range(self._stages):
             stage = cast(MlxModule, getattr(self, f"res{index}"))
-            hidden = _run_stage(stage, hidden, recompute=recompute)
+            hidden = _run_stage(stage, hidden, recompute=index < recompute)
             _eval_stage(hidden, enabled=materialize)
             skips.append(hidden)
         return _decode(
@@ -894,7 +894,7 @@ def _decode(
     *,
     final_upsample: ArrayTransform | None = None,
     materialize: bool = False,
-    recompute: bool = False,
+    recompute: int = 0,
 ) -> NetworkOutput:
     """Pop encoder ``skips`` from deepest to shallowest and return the final head.
 
@@ -921,7 +921,7 @@ def _decode(
             hidden = _match_spatial(upsample(hidden), skip)
             if type(decoder) is StackedConvs:
                 forward = decoder.concatenated
-                if recompute:
+                if index >= decoders - recompute:
                     forward = _checkpoint(decoder, forward)
                 hidden = forward((hidden, skip))
             else:
@@ -931,9 +931,14 @@ def _decode(
     return getattr(owner, f"seg{decoders - 1}")(hidden)
 
 
-def configure_training_forward(model: Network, *, recompute: bool) -> None:
-    """Select differentiable layers while retaining the native weight layout."""
-    model.activation_checkpointing = recompute
+def configure_training_forward(
+    model: Network, *, recompute: bool, recompute_stages: int = 0,
+) -> None:
+    """Enable gradients and recompute the selected highest-resolution stages."""
+    stages = len(model.spec.features)
+    if not 0 <= recompute_stages <= stages:
+        raise ContractError(f"recompute_stages must be between 0 and {stages}")
+    model.activation_checkpointing = stages if recompute else recompute_stages
     for _, layer in model.named_modules():
         if type(layer) is SpatialInstanceNorm:
             layer.use_differentiable_ops = True

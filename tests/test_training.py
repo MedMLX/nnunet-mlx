@@ -15,11 +15,62 @@ from nnunet_reference.arrays import host_array
 
 from nnunet_mlx.cli import main
 from nnunet_mlx.contracts import parse_mapping, parse_number, parse_sequence
+from nnunet_mlx.plans import read_json_object
 from nnunet_mlx.runtime import import_mlx
 from nnunet_mlx.training.data import PreparedDataset
 
 if TYPE_CHECKING:
     from mlx.core import array
+
+
+@pytest.mark.metal
+def test_scheduled_training_resumes_and_keeps_best_validation_checkpoint(tmp_path: Path) -> None:
+    from nnunet_mlx.training.runner import TrainingOverrides, train_model
+
+    raw = tmp_path / "dataset"
+    _write_dataset(raw)
+    prepared, resumed = (tmp_path / name for name in ("prepared", "resumed"))
+    assert main(["prepare-training", str(raw), str(prepared), "--patch-size", "16x16x16"]) == 0
+    settings: TrainingOverrides = {
+        "steps_per_epoch": 8,
+        "validate_every": 1,
+        "cosine_lr": True,
+        "balanced_ce": True,
+        "focus_label": 1,
+        "spatial_augment": True,
+        "recompute_stages": 1,
+    }
+
+    def interrupt(_: object) -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        train_model(prepared, resumed, epochs=3, options=settings, progress=interrupt)
+    mx, _ = import_mlx()
+    fold = resumed / "fold_0"
+    # Recover selection if the best alias was lost after the epoch was saved.
+    (fold / "checkpoint_best").unlink()
+    for completed in (8, 24):
+        if completed == 24:
+            train_model(prepared, resumed, resume=True)
+        state = mx.load(fold / "training.safetensors", format="safetensors")
+        # One warmup update, followed by 23 cosine updates on the original horizon.
+        phase = (completed - 2) / 23
+        expected_rate = 5e-5 + 0.5 * (1e-3 - 5e-5) * (1 + math.cos(math.pi * phase))
+        np.testing.assert_array_equal(host_array(state["optimizer.step"]), completed)
+        np.testing.assert_allclose(
+            host_array(state["optimizer.learning_rate"]), expected_rate, rtol=1e-5
+        )
+
+    score_payload: object = json.loads((resumed / "metrics.json").read_text(encoding="utf-8"))
+    history = [
+        parse_mapping(record, name="epoch metrics")
+        for record in parse_sequence(score_payload, name="history")
+    ]
+    best = max(history, key=lambda record: parse_number(record["validation_dice"], name="Dice"))
+    selected = read_json_object(fold / "checkpoint_best/state.json")
+    assert selected["current_epoch"] == best["epoch"]
+    assert selected["inference_allowed_mirroring_axes"] == []
 
 
 @pytest.mark.metal

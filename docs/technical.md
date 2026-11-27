@@ -14,6 +14,9 @@ Use `--recompute` to rebuild encoder and decoder stage activations during backwa
 The resume file stores the last completed epoch, model weights, and optimizer state.
 Validation pools Dice over held-out cases on the preprocessed grid with mirroring
 disabled. The final model folder can be passed directly to `model predict-folder`.
+The best checkpoint uses the mean of the pooled foreground Dice scores. The cosine
+schedule retains its original step budget across resume and holds at 5% of the
+configured learning rate after that budget.
 
 The M5 Max test used one 64³ batch-one crop from the HCC-TACE-Seg `HCC_063` CT and
 liver mask. MLX 0.32.5 ran with `MLX_ENABLE_TF32=0`. Each value is a median across
@@ -26,6 +29,70 @@ and synchronization.
 | Compiled FP32 | 44.4 | 3.97 |
 | Compiled BF16 | 35.9 | 2.26 |
 | Compiled BF16 with recomputation | 43.1 | 1.63 |
+
+### Selective activation recomputation
+
+`--recompute-stages N` selects the highest-resolution stages in each path. The
+residual stem is included when recomputation is enabled. The six-round paired
+measurements below used a 96³ batch-one Decathlon CT patch per task, compiled
+BF16 on M5 Max and MLX 0.32.5, with `MLX_ENABLE_TF32=0`.
+
+| Task | Stages per path | Warm update (ms) | Peak MLX allocation (GiB) |
+| :--- | ---: | ---: | ---: |
+| Liver | 0 | 115.7 | 4.50 |
+| Liver | 2 | 130.1 | 3.57 |
+| Pancreas | 0 | 114.5 | 4.45 |
+| Pancreas | 2 | 127.2 | 3.10 |
+
+### Decathlon convergence pilot
+
+The liver and pancreas pilots each used 20 training, five validation, and five
+held-out patients from the labeled Decathlon cases. All images were resampled
+to 2 mm isotropic spacing. Runs used compiled BF16, batch size one, 100 updates
+per epoch, and whole-volume validation every three epochs. The same patient
+splits and initialization seed were used across recipes.
+
+The table reports pairs of Dice scores at the epoch with the highest mean pooled
+foreground Dice within 1,200 updates. Liver selected warmup and decay, lesion-focused
+sampling, in-plane rotations, and balanced cross-entropy. Pancreas selected the
+same recipe with unweighted cross-entropy.
+
+| Task | Recipe | Patch | Organ Dice | Tumor Dice | Time (s) | Peak MLX (GiB) | Peak process footprint (GiB) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Liver | Baseline | 64³ | 0.439 | 0.000 | 72.4 | 2.31 | 4.32 |
+| Liver | Selected | 64³ | 0.701 | 0.208 | 72.1 | 2.31 | 4.34 |
+| Liver | Selected, two recomputed stages | 96³ | 0.840 | 0.000 | 190.5 | 3.63 | 8.05 |
+| Pancreas | Baseline | 64³ | 0.068 | 0.000 | 72.3 | 1.87 | 4.68 |
+| Pancreas | Selected | 64³ | 0.178 | 0.000 | 74.1 | 1.87 | 4.68 |
+| Pancreas | Selected, two recomputed stages | 96³ | 0.331 | 0.000 | 187.4 | 3.16 | 9.00 |
+
+The extended 64³ comparison stopped at the first validation with organ Dice of
+at least 0.75 for liver or 0.55 for pancreas, up to 3,000 updates. Baseline times
+sum the active segments before and after resume. Time includes validation and
+checkpoint writes. The 96³ trials retained the 1,200-update budget.
+
+| Task | Recipe | Patch | Time to target (s) | Highest validation organ Dice |
+| :--- | :--- | ---: | ---: | ---: |
+| Liver | Baseline | 64³ | >179.1 | 0.670 |
+| Liver | Selected | 64³ | 125.3 | 0.755 |
+| Liver | Selected, two recomputed stages | 96³ | 143.6 | 0.840 |
+| Pancreas | Baseline | 64³ | >174.8 | 0.132 |
+| Pancreas | Selected | 64³ | >175.5 | 0.338 |
+| Pancreas | Selected, two recomputed stages | 96³ | >187.4 | 0.331 |
+
+The validation-selected checkpoints were evaluated on the five held-out patients
+per task. Dice and surface Dice are patient means on the preprocessed grid.
+Surface Dice uses voxel centers and a 2 mm tolerance. Lesion detection requires
+prediction of at least 10% of the voxels in a six-connected reference lesion.
+
+| Task | Recipe | Patch | Organ Dice | Organ surface Dice | Tumor Dice | Tumor surface Dice | Lesions detected |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Liver | Extended baseline | 64³ | 0.684 | 0.233 | 0.033 | 0.052 | 4/45 |
+| Liver | Extended selected | 64³ | 0.792 | 0.440 | 0.273 | 0.183 | 13/45 |
+| Liver | Selected, two recomputed stages | 96³ | 0.870 | 0.559 | 0.000 | 0.000 | 0/45 |
+| Pancreas | Extended baseline | 64³ | 0.098 | 0.077 | 0.000 | 0.000 | 0/5 |
+| Pancreas | Extended selected | 64³ | 0.259 | 0.191 | 0.000 | 0.000 | 0/5 |
+| Pancreas | Selected, two recomputed stages | 96³ | 0.326 | 0.202 | 0.000 | 0.000 | 0/5 |
 
 ## Accumulation, compilation and arithmetic
 

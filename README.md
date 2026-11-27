@@ -125,6 +125,13 @@ the last completed epoch with `nnunet-mlx train prepared mlx-model --resume --ep
 Use `--initialize-from` to start from an MLX checkpoint with the same topology and
 label order. `--precision bfloat16` and `--recompute` reduce training memory.
 
+Use `--recompute-stages 2` to recompute only the two highest-resolution stages
+in each path. `--cosine-lr` adds warmup and cosine decay. `--focus-label 2`
+prioritizes label 2 in foreground sampling, and `--balanced-ce` weights class
+cross-entropy by the inverse square root of patch voxel counts.
+`--spatial-augment` replaces mirroring with small in-plane rotations. Pass
+`--checkpoint checkpoint_best` to predict with the best validation epoch.
+
 ### Convert a PyTorch-trained model
 
 `nnunet-mlx predict` takes `nnUNetv2_predict`'s options and runs a model you trained

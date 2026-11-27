@@ -7,12 +7,14 @@ from collections.abc import Generator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
+from math import cos, radians, sin
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
 import numpy as np
 import numpy.typing as npt
+from scipy.ndimage import affine_transform
 
 from nnunet_mlx.contracts import parse_integer, parse_mapping, parse_sequence, parse_string
 from nnunet_mlx.data.labels import LabelSemantics, parse_dataset_label_semantics
@@ -289,22 +291,33 @@ def _foreground_points(
 class PatchSampler:
     """Prefetch one fixed-size image/label batch while Metal evaluates the current step."""
 
-    def __init__(self, data: PreparedDataset, *, batch_size: int, augment: bool) -> None:
+    def __init__(
+        self,
+        data: PreparedDataset,
+        *,
+        batch_size: int,
+        augment: bool,
+        focus_label: int | None = None,
+        spatial_augment: bool = False,
+    ) -> None:
         self._data = data
         self._patch = data.plans.configuration.patch_size
         self._batch_size = batch_size
         self._augment = augment
+        self._spatial_augment = spatial_augment
+        self._focus_index = (
+            data.semantics.all_labels[1:].index(focus_label) if focus_label is not None else None
+        )
+        self._focus_cases = (
+            _cases_with_foreground(data, self._focus_index) if self._focus_index is not None else ()
+        )
 
         @lru_cache(maxsize=8)
         def load_case(identifier: str) -> tuple[FloatArray, Labels, tuple[Labels, ...]]:
             image, labels = data.arrays(identifier)
             path = data.folder / "cases" / identifier / "foreground.npz"
             with np.load(path, allow_pickle=False) as foreground:
-                points = tuple(
-                    array
-                    for key in foreground.files
-                    if (array := cast(Labels, foreground[key])).size
-                )
+                points = tuple(cast(Labels, foreground[key]) for key in foreground.files)
             return image, labels, points
 
         self._load_case = load_case
@@ -327,17 +340,22 @@ class PatchSampler:
         cases = self._data.split.train
         rank = len(self._patch)
         for index in range(self._batch_size):
-            image, labels, foreground = self._load_case(cases[int(rng.integers(len(cases)))])
+            image, labels, class_locations = self._load_case(cases[int(rng.integers(len(cases)))])
+            foreground = tuple(points for points in class_locations if points.size)
             center: tuple[int, ...] | None = None
-            if foreground and rng.random() < 1 / 3:
-                points = foreground[int(rng.integers(len(foreground)))]
-                center = tuple(int(value) for value in points[int(rng.integers(len(points)))])
+            if (foreground or self._focus_cases) and rng.random() < 1 / 3:
+                if self._focus_cases and self._focus_index is not None and rng.random() < 2 / 3:
+                    focused = self._focus_cases[int(rng.integers(len(self._focus_cases)))]
+                    image, labels, class_locations = self._load_case(focused)
+                    center = _sample_location(class_locations[self._focus_index], rng)
+                elif foreground:
+                    center = _sample_location(foreground[int(rng.integers(len(foreground)))], rng)
             if rank == 2:
                 plane = center[0] if center is not None else int(rng.integers(len(labels)))
                 image, labels = image[plane], labels[plane]
             source, dest = _patch_slices(labels.shape, self._patch, center, rng)
             values, target = image[source], labels[source]
-            if self._augment:
+            if self._augment and not self._spatial_augment:
                 axes = tuple(axis for axis in range(rank) if rng.random() < 0.5)
                 values, target = np.flip(values, axis=axes), np.flip(target, axis=axes)
             images[(index, *dest)] = values
@@ -347,10 +365,49 @@ class PatchSampler:
                 patch = images[(index, *dest)]
                 patch *= rng.uniform(0.9, 1.1, channels).astype(np.float32)
                 patch += rng.uniform(-0.1, 0.1, channels).astype(np.float32)
+                if self._spatial_augment and rng.random() < 1 / 3:
+                    _rotate_in_plane(images[index], targets[index], radians(rng.uniform(-10, 10)))
         ignore = self._data.semantics.ignore_label
         if ignore is not None:
             targets[targets == ignore] = -1
         return images, targets
+
+
+def _cases_with_foreground(data: PreparedDataset, index: int) -> tuple[str, ...]:
+    """Find training cases whose cached foreground coordinates contain the selected class."""
+    cases: list[str] = []
+    for identifier in data.split.train:
+        path = data.folder / "cases" / identifier / "foreground.npz"
+        with np.load(path, allow_pickle=False) as foreground:
+            if cast(Labels, foreground[f"arr_{index}"]).size:
+                cases.append(identifier)
+    if not cases:
+        raise ContractError("the focus label is absent from the prepared training cases")
+    return tuple(cases)
+
+
+def _sample_location(points: Labels, rng: np.random.Generator) -> tuple[int, ...]:
+    return tuple(int(value) for value in points[int(rng.integers(len(points)))])
+
+
+def _rotate_in_plane(image: FloatArray, labels: npt.NDArray[np.int32], angle: float) -> None:
+    """Rotate both tensors around the patch center while preserving handedness."""
+    transform = np.eye(labels.ndim)
+    transform[-2:, -2:] = ((cos(angle), -sin(angle)), (sin(angle), cos(angle)))
+    center = (np.asarray(labels.shape, dtype=np.float64) - 1) * 0.5
+    offset = center - transform @ center
+    for channel in range(image.shape[-1]):
+        values = image[..., channel]
+        affine_transform(values.copy(), transform, offset, output=values, order=1, prefilter=False)
+    affine_transform(
+        labels.copy(),
+        transform,
+        offset,
+        output=labels,
+        order=0,
+        cval=-1,
+        prefilter=False,
+    )
 
 
 def _patch_slices(

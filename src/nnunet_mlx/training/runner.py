@@ -9,10 +9,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from statistics import fmean
 from time import perf_counter
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from mlx import core as mx
-from mlx.optimizers import AdamW
+from mlx.optimizers import AdamW, cosine_decay, join_schedules, linear_schedule
 
 from nnunet_mlx.contracts import parse_boolean, parse_integer, parse_mapping, parse_number
 from nnunet_mlx.errors import ContractError
@@ -23,7 +23,7 @@ from nnunet_mlx.runtime import runtime_info, validate_inference_execution
 from nnunet_mlx.storage.checkpoint import load_inference_checkpoint
 from nnunet_mlx.storage.filesystem import write_new_directory
 from nnunet_mlx.training.checkpoint import (
-    export_final,
+    export_checkpoint,
     load_training_state,
     save_training_state,
     write_training_json,
@@ -46,7 +46,12 @@ class TrainingOverrides(TypedDict, total=False):
     learning_rate: float
     precision: Precision
     recompute: bool
+    recompute_stages: int
     augment: bool
+    spatial_augment: bool
+    focus_label: int
+    balanced_ce: bool
+    cosine_lr: bool
     compile_step: bool
 
 
@@ -61,6 +66,11 @@ class TrainingSettings:
     recompute: bool
     augment: bool
     compile_step: bool
+    recompute_stages: int
+    spatial_augment: bool
+    focus_label: int | None
+    balanced_ce: bool
+    cosine_lr: bool
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> TrainingSettings:
@@ -76,6 +86,15 @@ class TrainingSettings:
         precision = payload.get("precision")
         if precision not in ("float32", "bfloat16"):
             raise ContractError("precision must be float32 or bfloat16")
+        recompute = parse_boolean(payload.get("recompute"), name="recompute")
+        stages = parse_integer(payload.get("recompute_stages", 0), name="recompute_stages")
+        if stages < 0 or (recompute and stages):
+            raise ContractError("choose full recomputation or a nonnegative recompute_stages count")
+        augment = parse_boolean(payload.get("augment"), name="augment")
+        spatial = parse_boolean(payload.get("spatial_augment", False), name="spatial_augment")
+        if spatial and not augment:
+            raise ContractError("spatial augmentation requires augmentation to be enabled")
+        focus = payload.get("focus_label")
         return cls(
             batch,
             steps,
@@ -83,9 +102,14 @@ class TrainingSettings:
             seed,
             rate,
             precision,
-            parse_boolean(payload.get("recompute"), name="recompute"),
-            parse_boolean(payload.get("augment"), name="augment"),
+            recompute,
+            augment,
             parse_boolean(payload.get("compile_step"), name="compile_step"),
+            stages,
+            spatial,
+            None if focus is None else _positive_int(focus, name="focus_label"),
+            parse_boolean(payload.get("balanced_ce", False), name="balanced_ce"),
+            parse_boolean(payload.get("cosine_lr", False), name="cosine_lr"),
         )
 
 
@@ -126,7 +150,13 @@ def train_model(
             | overrides
         )
         target = 100 if epochs is None else _positive_int(epochs, name="epochs")
-        model, optimizer = _build(data, settings, initialize_from=initialize_from)
+        schedule_steps = target * settings.steps_per_epoch if settings.cosine_lr else None
+        model, optimizer = _build(
+            data,
+            settings,
+            initialize_from=initialize_from,
+            schedule_steps=schedule_steps,
+        )
 
         def initialize(folder: Path) -> None:
             fold_folder = folder / f"fold_{data.fold}"
@@ -140,6 +170,7 @@ def train_model(
                     "prepared_dataset": data.identifier,
                     "settings": asdict(settings),
                     "target_epochs": target,
+                    "schedule_steps": schedule_steps,
                     "runtime": runtime.to_payload() | {"dtype": settings.precision},
                 },
             )
@@ -156,11 +187,22 @@ def train_model(
 
 
 def _build(
-    data: PreparedDataset, settings: TrainingSettings, *, initialize_from: Path | None = None
+    data: PreparedDataset,
+    settings: TrainingSettings,
+    *,
+    initialize_from: Path | None = None,
+    schedule_steps: int | None = None,
 ) -> tuple[Network, AdamW]:
     config = data.plans.configuration
     if config.previous_stage_name is not None:
         raise ContractError("training requires a single-stage configuration")
+    if (
+        settings.focus_label is not None
+        and settings.focus_label not in data.semantics.all_labels[1:]
+    ):
+        raise ContractError("focus_label must be a foreground label in dataset.json")
+    if settings.balanced_ce and data.semantics.has_regions:
+        raise ContractError("balanced cross-entropy requires mutually exclusive class targets")
     mx.random.seed(settings.seed)
     model = build_model_from_plans(
         data.plans.topology_payload(),
@@ -174,9 +216,27 @@ def _build(
     validate_inference_execution(model)
     if initialize_from is not None:
         load_inference_checkpoint(initialize_from, model=model)
-    configure_training_forward(model, recompute=settings.recompute)
+    configure_training_forward(
+        model,
+        recompute=settings.recompute,
+        recompute_stages=settings.recompute_stages,
+    )
     model.train()
-    optimizer = AdamW(learning_rate=settings.learning_rate, weight_decay=1e-4, bias_correction=True)
+    rate: float | Callable[[mx.array], mx.array] = settings.learning_rate
+    if schedule_steps is not None and schedule_steps > 1:
+        warmup = max(1, schedule_steps // 20)
+        rate = join_schedules(
+            (
+                linear_schedule(0.1 * settings.learning_rate, settings.learning_rate, warmup),
+                cosine_decay(
+                    settings.learning_rate,
+                    schedule_steps - warmup,
+                    0.05 * settings.learning_rate,
+                ),
+            ),
+            (warmup,),
+        )
+    optimizer = AdamW(learning_rate=rate, weight_decay=1e-4, bias_correction=True)
     optimizer.init(model.trainable_parameters())
     return model, optimizer
 
@@ -199,10 +259,16 @@ def _run_epochs(
         raise ContractError("prepared plans or dataset metadata changed since training started")
     saved = parse_mapping(run.get("settings"), name="training settings")
     settings = TrainingSettings.from_payload(saved)
-    if changed := [key for key, value in overrides.items() if saved.get(key) != value]:
+    resolved = asdict(settings)
+    if changed := [key for key, value in overrides.items() if resolved.get(key) != value]:
         raise ContractError(f"resume cannot change training settings: {', '.join(sorted(changed))}")
     target = _positive_int(run["target_epochs"] if epochs is None else epochs, name="epochs")
-    model, optimizer = _build(data, settings)
+    schedule_steps = (
+        _positive_int(run.get("schedule_steps"), name="schedule_steps")
+        if settings.cosine_lr
+        else None
+    )
+    model, optimizer = _build(data, settings, schedule_steps=schedule_steps)
     fold = destination / f"fold_{data.fold}"
     history = load_training_state(fold / _CHECKPOINT, model, optimizer)
     if target < len(history):
@@ -210,32 +276,58 @@ def _run_epochs(
     if target != run["target_epochs"]:
         write_training_json(run_path, run | {"target_epochs": target})
 
+    def publish(
+        epoch: int,
+        name: Literal["checkpoint_best", "checkpoint_final"],
+    ) -> Path:
+        return export_checkpoint(
+            fold,
+            model if epoch == len(history) else None,
+            configuration=data.plans.configuration.name,
+            fold=data.fold,
+            epoch=epoch,
+            augment=settings.augment and not settings.spatial_augment,
+            name=name,
+        )
+
+    best = float("-inf")
+    previous_best = next((record for record in reversed(history) if record.get("best")), None)
+    if previous_best is not None:
+        best = parse_number(previous_best.get("validation_dice"), name="best validation Dice")
+        publish(parse_integer(previous_best.get("epoch"), name="best epoch"), "checkpoint_best")
+
     step = TrainingStep(
         model,
         optimizer,
         data.semantics,
         precision=settings.precision,
         compile_step=settings.compile_step,
+        balanced_ce=settings.balanced_ce,
     )
-    sampler = PatchSampler(data, batch_size=settings.batch_size, augment=settings.augment)
+    sampler = PatchSampler(
+        data,
+        batch_size=settings.batch_size,
+        augment=settings.augment,
+        focus_label=settings.focus_label,
+        spatial_augment=settings.spatial_augment,
+    )
     metrics_path = destination / "metrics.json"
     if history:
         write_training_json(metrics_path, history)
     for epoch in range(len(history) + 1, target + 1):
         metrics = _run_epoch(epoch, target, settings, sampler, step, model, data)
+        score = metrics.get("validation_dice")
+        if isinstance(score, float) and score > best:
+            best = score
+            metrics["best"] = True
         history.append(metrics)
         save_training_state(fold / _CHECKPOINT, model, optimizer, history)
+        if metrics.get("best"):
+            publish(epoch, "checkpoint_best")
         write_training_json(metrics_path, history)
         if progress is not None:
             progress(metrics)
-    return export_final(
-        fold,
-        model,
-        configuration=data.plans.configuration.name,
-        fold=data.fold,
-        epoch=target,
-        augment=settings.augment,
-    )
+    return publish(target, "checkpoint_final")
 
 
 def _run_epoch(

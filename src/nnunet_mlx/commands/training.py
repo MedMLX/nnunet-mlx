@@ -78,9 +78,24 @@ def train_command(
     recompute: Annotated[
         bool | None, typer.Option("--recompute/--no-recompute", help="Recompute stage activations.")
     ] = None,
+    recompute_stages: Annotated[
+        int | None, typer.Option(min=0, help="Recompute N highest-resolution stages per path.")
+    ] = None,
     augment: Annotated[
         bool | None,
         typer.Option("--augment/--no-augment", help="Mirror and jitter training patches."),
+    ] = None,
+    spatial_augment: Annotated[
+        bool | None, typer.Option("--spatial-augment", help="Use small in-plane rotations.")
+    ] = None,
+    focus_label: Annotated[
+        int | None, typer.Option(min=1, help="Prioritize this label in foreground sampling.")
+    ] = None,
+    balanced_ce: Annotated[
+        bool | None, typer.Option("--balanced-ce", help="Weight class CE by voxel frequency.")
+    ] = None,
+    cosine_lr: Annotated[
+        bool | None, typer.Option("--cosine-lr", help="Warm up and decay the learning rate.")
     ] = None,
     compile_step: Annotated[
         bool | None, typer.Option("--compile/--eager", help="Compile the training step.")
@@ -112,7 +127,12 @@ def train_command(
                 "learning_rate": learning_rate,
                 "precision": precision,
                 "recompute": recompute,
+                "recompute_stages": recompute_stages,
                 "augment": augment,
+                "spatial_augment": spatial_augment,
+                "focus_label": focus_label,
+                "balanced_ce": balanced_ce,
+                "cosine_lr": cosine_lr,
                 "compile_step": compile_step,
             }.items()
             if value is not None

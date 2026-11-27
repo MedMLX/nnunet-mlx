@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from mlx.optimizers import AdamW
 from mlx.utils import tree_flatten, tree_unflatten
@@ -84,19 +84,22 @@ def load_training_state(path: Path, model: Network, optimizer: AdamW) -> History
     return history
 
 
-def export_final(
+def export_checkpoint(
     folder: Path,
-    model: Network,
+    model: Network | None,
     *,
     configuration: str,
     fold: int | str,
     epoch: int,
     augment: bool,
+    name: Literal["checkpoint_best", "checkpoint_final"],
 ) -> Path:
-    """Publish one immutable inference checkpoint and point checkpoint_final at it."""
+    """Publish an epoch snapshot and atomically select it for inference."""
     snapshot = folder / f"checkpoint_epoch_{epoch}"
-    rank = model.spec.spatial_dims
     if not snapshot.is_dir():
+        if model is None:
+            raise ContractError(f"saved validation checkpoint is missing: {snapshot}")
+        rank = model.spec.spatial_dims
         save_inference_checkpoint(
             snapshot,
             model=model,
@@ -108,14 +111,14 @@ def export_final(
                 dropped_source_keys=(),
             ),
         )
-    final = folder / "checkpoint_final"
-    if final.exists() and not final.is_symlink():
-        raise ContractError(f"cannot replace a checkpoint directory: {final}")
+    alias = folder / name
+    if alias.exists() and not alias.is_symlink():
+        raise ContractError(f"cannot replace a checkpoint directory: {alias}")
     with TemporaryDirectory(dir=folder, prefix=".inference-") as temporary:
-        staged = Path(temporary) / final.name
+        staged = Path(temporary) / name
         staged.symlink_to(snapshot.name, target_is_directory=True)
-        staged.replace(final)
-    return final
+        staged.replace(alias)
+    return alias
 
 
 def write_training_json(path: Path, payload: object) -> None:
