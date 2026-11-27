@@ -113,8 +113,9 @@ nnunet-mlx model predict-folder --model-folder mlx-model \
   --input-folder Dataset001_Example/imagesTs --output-folder predictions
 ```
 
-Preparation uses the training cases to set the voxel spacing and U-Net patch
-geometry. Use `--splits splits_final.json --fold 0` for a predefined split or
+Preparation uses the training cases to set voxel spacing and U-Net patch
+geometry, and fits foreground intensity statistics for channels named `CT`.
+Use `--splits splits_final.json --fold 0` for a predefined split or
 `--plans nnUNetPlans.json` for an existing single-stage plain or residual U-Net. Pass
 `--configuration 2d` to prepare or predict with a 2-D network.
 To train on all cases, pass `--fold all` at preparation and prediction.

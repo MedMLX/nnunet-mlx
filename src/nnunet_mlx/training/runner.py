@@ -18,10 +18,7 @@ from nnunet_mlx.model.factory import build_model_from_plans, network_spec_from_p
 from nnunet_mlx.model.metadata import model_input_channel_count
 from nnunet_mlx.plans import PlansContract, read_json_object
 from nnunet_mlx.runtime import runtime_info, validate_inference_execution
-from nnunet_mlx.storage.checkpoint import (
-    load_inference_checkpoint,
-    read_inference_checkpoint_state,
-)
+from nnunet_mlx.storage.checkpoint import load_inference_checkpoint
 from nnunet_mlx.storage.filesystem import write_new_directory
 from nnunet_mlx.training.data import PatchSampler, PreparedDataset
 
@@ -29,6 +26,7 @@ if TYPE_CHECKING:
     from mlx.optimizers import AdamW
 
     from nnunet_mlx.model.network import Network
+    from nnunet_mlx.storage.checkpoint import InferenceCheckpointState
     from nnunet_mlx.training.checkpoint import History
     from nnunet_mlx.training.step import TrainingStep
 
@@ -198,8 +196,10 @@ def train_model(
             )
             save_training_state(fold_folder / _CHECKPOINT, model, optimizer, [])
 
-        write_new_directory(destination, initialize)
-        return _run_epochs(destination, data, settings, target, model, optimizer, [], progress)
+        return _run_epochs(
+            destination, data, settings, target, model, optimizer, [], progress,
+            initialize=initialize,
+        )
 
 
 def _lock_run(stack: ExitStack, folder: Path) -> None:
@@ -282,20 +282,24 @@ def _initialize_weights(checkpoint: Path, model: Network, data: PreparedDataset)
     semantics = parse_dataset_label_semantics(source_dataset)
     if replace(semantics, ignore_label=data.semantics.ignore_label) != data.semantics:
         raise ContractError("initialization checkpoint labels do not match the prepared dataset")
-    state = read_inference_checkpoint_state(checkpoint)
-    config = state.identity.configuration
-    source_plans = PlansContract.from_payload(
-        read_json_object(folder / "plans.json"), configuration=config
-    )
-    spec = network_spec_from_plans(
-        source_plans.topology_payload(),
-        configuration=config,
-        input_channels=model_input_channel_count(source_dataset, source_plans, semantics),
-        output_channels=semantics.output_channels,
-    )
-    if spec != model.spec or state.spatial_dims != model.spec.spatial_dims:
-        raise ContractError("initialization checkpoint topology does not match the prepared plans")
-    load_inference_checkpoint(checkpoint, model=model)
+
+    def validate_topology(state: InferenceCheckpointState) -> None:
+        config = state.identity.configuration
+        source_plans = PlansContract.from_payload(
+            read_json_object(folder / "plans.json"), configuration=config
+        )
+        spec = network_spec_from_plans(
+            source_plans.topology_payload(),
+            configuration=config,
+            input_channels=model_input_channel_count(source_dataset, source_plans, semantics),
+            output_channels=semantics.output_channels,
+        )
+        if spec != model.spec or state.spatial_dims != model.spec.spatial_dims:
+            raise ContractError(
+                "initialization checkpoint topology does not match the prepared plans"
+            )
+
+    load_inference_checkpoint(checkpoint, model=model, validate_state=validate_topology)
     # AdamW initializes its moments from the parameter dtype.
     model.set_dtype(mx.float32)
 
@@ -350,15 +354,16 @@ def _run_epochs(
     optimizer: AdamW,
     history: History,
     progress: Callable[[Mapping[str, object]], None] | None,
+    *,
+    initialize: Callable[[Path], None] | None = None,
 ) -> Path:
     from nnunet_mlx.training.checkpoint import (
         export_checkpoint,
         save_training_state,
         write_training_json,
     )
-    from nnunet_mlx.training.step import TrainingStep
-
     fold = destination / f"fold_{data.fold}"
+
     def publish(
         epoch: int,
         name: Literal["checkpoint_best", "checkpoint_final"],
@@ -379,6 +384,24 @@ def _run_epochs(
         best = parse_number(previous_best.get("validation_dice"), name="best validation Dice")
         publish(parse_integer(previous_best.get("epoch"), name="best epoch"), "checkpoint_best")
 
+    metrics_path = destination / "metrics.json"
+    if history:
+        write_training_json(metrics_path, history)
+    if target == len(history):
+        return publish(target, "checkpoint_final")
+
+    sampler = PatchSampler(
+        data,
+        batch_size=settings.batch_size,
+        augment=settings.augment,
+        focus_label=settings.focus_label,
+        spatial_augment=settings.spatial_augment,
+    )
+    if initialize is not None:
+        write_new_directory(destination, initialize)
+
+    from nnunet_mlx.training.step import TrainingStep
+
     step = TrainingStep(
         model,
         optimizer,
@@ -388,16 +411,6 @@ def _run_epochs(
         balanced_ce=settings.balanced_ce,
         batch_dice=data.plans.configuration.batch_dice,
     )
-    sampler = PatchSampler(
-        data,
-        batch_size=settings.batch_size,
-        augment=settings.augment,
-        focus_label=settings.focus_label,
-        spatial_augment=settings.spatial_augment,
-    )
-    metrics_path = destination / "metrics.json"
-    if history:
-        write_training_json(metrics_path, history)
     for epoch in range(len(history) + 1, target + 1):
         metrics = _run_epoch(epoch, target, settings, sampler, step, model, data)
         score = metrics.get("validation_dice")

@@ -3,7 +3,10 @@
 ## Native training
 
 The native planner uses the training split to choose median voxel spacing and patch
-geometry. The trainer reads memory-mapped cases, samples foreground patches, and
+geometry. For CT channels it pools equal-sized samples of annotated foreground
+from the training cases and stores the mean, standard deviation, and 0.5th and
+99.5th percentiles in the plans. Validation and inference reuse the same fit.
+The trainer reads memory-mapped cases, samples foreground patches, and
 prefetches one batch. AdamW trains the encoder, decoder, and full-resolution
 segmentation head using Dice and cross-entropy. For class targets,
 cross-entropy weights each class by the inverse square root of its annotated
@@ -68,6 +71,23 @@ Each row reports the checkpoint with the highest mean pooled foreground Dice.
 
 Class-weighted cross-entropy first produced tumor overlap after 900 updates.
 The comparison used one seed and a single validation split.
+
+### Pancreas spacing comparison
+
+Both arms used the same 80 training scans, CT intensity fit, network topology,
+seed, and 2,400-update schedule. Patches covered 160×192×192 mm in both arms.
+The highest patient-mean tumor Dice across four validation milestones selected
+each checkpoint. Five reserved cases were evaluated after selection. All
+scores below use the production label predictions on the original NIfTI grid.
+
+| Spacing (mm) | Patch | Validation tumor Dice | Reserved tumor Dice | Reserved pancreas Dice | Reserved lesions detected | Training (s) | Peak MLX (GiB) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2×2×2 | 80×96×96 | 0.331 | 0.108 | 0.526 | 3/5 | 267 | 3.53 |
+| 2×1.5×1.5 | 80×128×128 | 0.195 | 0.067 | 0.556 | 2/5 | 488 | 4.27 |
+
+Both selected checkpoints came from epoch 24. Dice is averaged across patients.
+Lesion detection requires overlap with at least 10% of a six-connected reference component.
+Training time excludes validation and checkpoint export.
 
 ### Decathlon convergence pilot
 

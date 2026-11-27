@@ -74,6 +74,36 @@ def test_scheduled_training_resumes_and_keeps_best_validation_checkpoint(tmp_pat
     assert selected["current_epoch"] == best["epoch"]
     assert selected["inference_allowed_mirroring_axes"] == []
 
+    # Completed runs can restore inference aliases from their committed history alone.
+    (prepared / "cases").rename(tmp_path / "offline-cases")
+    (fold / "checkpoint_best").unlink()
+    (fold / "checkpoint_final").unlink()
+    (resumed / "metrics.json").unlink()
+    final = train_model(prepared, resumed, resume=True, epochs=3)
+    assert read_json_object(final / "state.json")["current_epoch"] == 3
+    assert read_json_object(fold / "checkpoint_best/state.json") == selected
+    assert json.loads((resumed / "metrics.json").read_text(encoding="utf-8")) == score_payload
+
+
+@pytest.mark.metal
+def test_invalid_focus_can_retry_the_same_training_destination(tmp_path: Path) -> None:
+    from nnunet_mlx import prepare_training_data, train_model
+
+    raw = tmp_path / "dataset"
+    _write_dataset(raw)
+    dataset_path = raw / "dataset.json"
+    dataset = read_json_object(dataset_path)
+    dataset["labels"] = {"background": 0, "ellipsoid": 1, "lesion": 2}
+    dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+    prepared = prepare_training_data(raw, tmp_path / "prepared", patch_size=(16, 16, 16))
+    output = tmp_path / "model"
+    with pytest.raises(ContractError, match="focus label is absent"):
+        train_model(prepared, output, epochs=1, options={"steps_per_epoch": 1, "focus_label": 2})
+    final = train_model(
+        prepared, output, epochs=1, options={"steps_per_epoch": 1, "focus_label": 1},
+    )
+    assert read_json_object(final / "state.json")["current_epoch"] == 1
+
 
 @pytest.mark.metal
 def test_native_training_resume_and_nifti_prediction(tmp_path: Path) -> None:
@@ -185,6 +215,7 @@ def test_warm_start_checks_source_labels_and_topology(tmp_path: Path) -> None:
     configs["3d_fullres"] = config
     plans["configurations"] = configs
     plans_path.write_text(json.dumps(plans), encoding="utf-8")
+    source_weights.write_bytes(b"invalid checkpoint weights")
     with pytest.raises(ContractError, match="topology does not match"):
         train_model(prepared, tmp_path / "bad-topology", epochs=1, initialize_from=checkpoint)
 

@@ -39,6 +39,9 @@ type Batch = tuple[FloatArray, npt.NDArray[np.int32]]
 
 _DATA_SCHEMA = "nnunet-mlx.training-data.v1"
 _SAMPLE_LIMIT = 1024
+_CT_SAMPLES_PER_CASE = 10_000
+_CT_SAMPLES_TOTAL = 1_000_000
+_VOXEL_BLOCK = 1 << 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +134,7 @@ def prepare_training_data(
     """Prepare a raw dataset with ``dataset.json``, ``imagesTr`` and ``labelsTr``.
 
     The destination is created after all selected cases have been prepared.
+    Native plans fit CT normalization from labeled foreground in the training split.
     Set ``fold`` to ``"all"`` to prepare every case for training.
     """
     source = Path(source)
@@ -147,14 +151,32 @@ def prepare_training_data(
     channels = input_channel_count(dataset)
     cases = {case.identifier: case for case in discover_input_cases(source / "imagesTr", ending)}
     split = _select_split(_case_ids(tuple(cases), name="dataset"), fold, splits_file)
+    selected = (*split.train, *split.val)
+    label_files = {case: source / "labelsTr" / f"{case}{ending}" for case in selected}
+    for case_id, path in label_files.items():
+        if not path.is_file():
+            raise ContractError(f"missing training label for {case_id!r}")
     if plans_file is None:
+        reader = select_reader(ending, dataset.get("overwrite_image_reader_writer"))
+        training_cases = [cases[case] for case in split.train]
+        channel_names = parse_mapping(dataset.get("channel_names"), name="dataset channel_names")
+        ct_channels = tuple(
+            channel for channel in range(channels)
+            if parse_string(channel_names[str(channel)], name="channel name").casefold() == "ct"
+        )
+        ct_intensities = (
+            _ct_intensity_statistics(
+                training_cases, label_files, reader, semantics, channels, ct_channels,
+            ) if ct_channels else None
+        )
         plans = native_plans(
-            [cases[case] for case in split.train],
+            training_cases,
             dataset_name=source.resolve().name,
             image_channels=channels,
-            reader=select_reader(ending, dataset.get("overwrite_image_reader_writer")),
+            reader=reader,
             configuration=configuration,
             patch_size=patch_size,
+            ct_intensities=ct_intensities,
         )
     else:
         if patch_size is not None:
@@ -167,21 +189,16 @@ def prepare_training_data(
     if plans.configuration.previous_stage_name is not None:
         raise ContractError("training requires a single-stage configuration")
     reader = resolve_image_reader(plans.image_reader_writer, file_ending=ending)
-    selected = (*split.train, *split.val)
-    for case_id in selected:
-        if not (source / "labelsTr" / f"{case_id}{ending}").is_file():
-            raise ContractError(f"missing training label for {case_id!r}")
 
     def write(folder: Path) -> None:
         rng = np.random.default_rng(0)
         for case_id in selected:
             case = cases[case_id]
-            label_file = source / "labelsTr" / f"{case_id}{ending}"
             try:
                 _prepare_case(
                     folder / "cases" / case_id,
                     case,
-                    label_file,
+                    label_files[case_id],
                     reader,
                     plans,
                     semantics,
@@ -208,18 +225,14 @@ def prepare_training_data(
     return PreparedDataset.load(destination)
 
 
-def _prepare_case(
-    folder: Path,
+def _read_training_case(
     case: RawInputCase,
     label_file: Path,
     reader: str,
-    plans: PlansContract,
     semantics: LabelSemantics,
     channels: int,
-    rng: np.random.Generator,
-    *,
-    sample_foreground: bool,
-) -> None:
+) -> tuple[FloatArray, npt.NDArray[np.int32], dict[str, object]]:
+    """Read channels-first images and one aligned label map in raw voxel order."""
     if reader.startswith("NibabelIO") and len(case.image_files) > 1:
         modalities = [read_images(reader, (path,)) for path in case.image_files]
         properties = modalities[0][1]
@@ -237,6 +250,88 @@ def _prepare_case(
     maximum = semantics.ignore_label or semantics.all_labels[-1]
     if int(target.max()) > maximum:
         raise ContractError("segmentation contains labels absent from dataset.json")
+    return image, target, properties
+
+
+def _ct_intensity_statistics(
+    cases: Sequence[RawInputCase],
+    label_files: dict[str, Path],
+    reader: str,
+    semantics: LabelSemantics,
+    channels: int,
+    ct_channels: tuple[int, ...],
+) -> dict[str, dict[str, float]]:
+    """Fit clipping and scaling from equal-sized training foreground samples."""
+    samples_per_case = min(_CT_SAMPLES_PER_CASE, max(1, _CT_SAMPLES_TOTAL // len(cases)))
+    used_cases = cases[:_CT_SAMPLES_TOTAL]
+    samples = np.empty((len(ct_channels), len(used_cases) * samples_per_case), dtype=np.float32)
+    used = 0
+    for case in used_cases:
+        try:
+            image, target, _ = _read_training_case(
+                case, label_files[case.identifier], reader, semantics, channels,
+            )
+        except ContractError as error:
+            raise ContractError(f"case {case.identifier!r}: {error}") from error
+        indices = _ct_sample_indices(target, semantics.all_labels[-1], samples_per_case)
+        end = used + indices.size
+        for index, channel in enumerate(ct_channels):
+            samples[index, used:end] = image[channel].reshape(-1)[indices]
+        used = end
+        del image, target
+    if not used:
+        raise ContractError("CT normalization requires annotated foreground in the training split")
+    statistics: dict[str, dict[str, float]] = {}
+    for index, channel in enumerate(ct_channels):
+        values = samples[index, :used].astype(np.float64)
+        lower, upper = np.percentile(values, (0.5, 99.5))
+        statistics[str(channel)] = {
+            "mean": float(values.mean()),
+            "std": max(float(values.std()), 1e-8),
+            "percentile_00_5": float(lower),
+            "percentile_99_5": float(upper),
+        }
+    return statistics
+
+
+def _ct_sample_indices(labels: Labels, maximum: int, count: int) -> npt.NDArray[np.intp]:
+    """Draw foreground with replacement without materializing all voxel indices."""
+    values = labels.reshape(-1)
+    starts = range(0, len(values), _VOXEL_BLOCK)
+    counts = [
+        _foreground_count(values[start : start + _VOXEL_BLOCK], maximum) for start in starts
+    ]
+    total = sum(counts)
+    if not total:
+        return np.empty(0, np.intp)
+    ranks = np.random.RandomState(1234).randint(total, size=count, dtype=np.intp)
+    indices = np.empty_like(ranks)
+    offset = 0
+    for start, block_count in zip(starts, counts, strict=True):
+        end = offset + block_count
+        selected = (ranks >= offset) & (ranks < end)
+        if np.any(selected):
+            block = values[start : start + _VOXEL_BLOCK]
+            positions = np.flatnonzero((block > 0) & (block <= maximum))
+            indices[selected] = start + positions[ranks[selected] - offset]
+        offset = end
+    return indices
+
+
+def _prepare_case(
+    folder: Path,
+    case: RawInputCase,
+    label_file: Path,
+    reader: str,
+    plans: PlansContract,
+    semantics: LabelSemantics,
+    channels: int,
+    rng: np.random.Generator,
+    *,
+    sample_foreground: bool,
+) -> None:
+    image, target, properties = _read_training_case(case, label_file, reader, semantics, channels)
+    maximum = semantics.ignore_label or semantics.all_labels[-1]
     prepared = preprocess_raw_case(image, properties, plans)
     geometry = prepared.geometry
     transposed = target.transpose(0, *(axis + 1 for axis in plans.transpose_forward))
@@ -285,9 +380,8 @@ def _sample_points(
     values = labels.reshape(-1)
     sampled = np.empty(0, np.intp)
     seen = 0
-    block_size = 1 << 20
-    for start in range(0, len(values), block_size):
-        block = values[start : start + block_size]
+    for start in range(0, len(values), _VOXEL_BLOCK):
+        block = values[start : start + _VOXEL_BLOCK]
         matches = np.flatnonzero(block != label if exclude else block == label)
         count = len(matches)
         if count:

@@ -49,6 +49,7 @@ def native_plans(
     reader: str,
     configuration: str | None,
     patch_size: tuple[int, ...] | None,
+    ct_intensities: dict[str, dict[str, float]] | None = None,
 ) -> PlansContract:
     """Choose median training spacing and an anisotropy-aware plain U-Net topology."""
     geometry = [_image_geometry(case.image_files[0], reader) for case in cases]
@@ -73,14 +74,18 @@ def native_plans(
         raise ContractError(f"{name} requires a {rank}-D patch size")
     strides, kernels = _topology(patch_size, network_spacing)
     stages = len(strides)
+    ct_channels = ct_intensities or {}
     config: dict[str, object] = {
         "data_identifier": f"MLX_{name}",
         "patch_size": patch_size,
         "spacing": network_spacing,
         "batch_size": 2 if rank == 2 else 1,
         "batch_dice": True,
-        "normalization_schemes": ["ZScoreNormalization"] * image_channels,
-        "use_mask_for_norm": [True] * image_channels,
+        "normalization_schemes": [
+            "CTNormalization" if str(channel) in ct_channels else "ZScoreNormalization"
+            for channel in range(image_channels)
+        ],
+        "use_mask_for_norm": [str(channel) not in ct_channels for channel in range(image_channels)],
         "architecture": {
             "network_class_name": "dynamic_network_architectures.architectures.unet.PlainConvUNet",
             "arch_kwargs": {
@@ -108,16 +113,16 @@ def native_plans(
             "order_z": order,
             "force_separate_z": None,
         }
-    return PlansContract.from_payload(
-        {
-            "dataset_name": dataset_name,
-            "image_reader_writer": reader,
-            "transpose_forward": forward,
-            "transpose_backward": [forward.index(axis) for axis in range(3)],
-            "configurations": {name: config},
-        },
-        configuration=name,
-    )
+    payload: dict[str, object] = {
+        "dataset_name": dataset_name,
+        "image_reader_writer": reader,
+        "transpose_forward": forward,
+        "transpose_backward": [forward.index(axis) for axis in range(3)],
+        "configurations": {name: config},
+    }
+    if ct_channels:
+        payload["foreground_intensity_properties_per_channel"] = ct_channels
+    return PlansContract.from_payload(payload, configuration=name)
 
 
 def _topology(

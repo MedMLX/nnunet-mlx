@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -135,15 +135,19 @@ def load_inference_checkpoint(
     directory: str | Path,
     *,
     model: Module,
+    validate_state: Callable[[InferenceCheckpointState], None] | None = None,
 ) -> InferenceCheckpointState:
     """Validate checkpoint structure and metadata, then load its weights strictly.
 
-    The file set and schema are checked, and the loaded parameters must be finite.
+    The file set and schema are checked before calling ``validate_state``, if supplied.
+    Weights are loaded only after that validator succeeds and must be finite.
     This does not authenticate files or compare their contents to a digest.
     """
 
     source = Path(directory)
     state = read_inference_checkpoint_state(source)
+    if validate_state is not None:
+        validate_state(state)
     _load_model_weights(source, model)
     return state
 
