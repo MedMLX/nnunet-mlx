@@ -17,13 +17,13 @@ import numpy.typing as npt
 from scipy.ndimage import affine_transform
 
 from nnunet_mlx.contracts import parse_integer, parse_mapping, parse_sequence, parse_string
+from nnunet_mlx.data.cases import RawInputCase, discover_input_cases
 from nnunet_mlx.data.labels import LabelSemantics, parse_dataset_label_semantics
 from nnunet_mlx.data.preprocessing import preprocess_raw_case
 from nnunet_mlx.data.resampling import resample_segmentation
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.model.metadata import input_channel_count, validate_folds
 from nnunet_mlx.plans import PlansContract, read_json_object
-from nnunet_mlx.prediction.pipeline import RawInputCase, discover_input_cases
 from nnunet_mlx.storage.filesystem import write_new_directory
 from nnunet_mlx.storage.imageio import (
     read_images,
@@ -38,7 +38,7 @@ type Labels = npt.NDArray[np.integer]
 type Batch = tuple[FloatArray, npt.NDArray[np.int32]]
 
 _DATA_SCHEMA = "nnunet-mlx.training-data.v1"
-_FOREGROUND_LIMIT = 1024
+_SAMPLE_LIMIT = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +60,11 @@ class Split:
 
 @dataclass(frozen=True, slots=True)
 class PreparedDataset:
-    """One immutable split of cropped and resampled cases, ready for patch sampling."""
+    """A prepared folder of cropped and resampled cases for one train/validation split.
+
+    ``folder`` is the directory passed to training. ``split`` records case IDs,
+    and ``arrays`` maps an individual case without loading it into memory.
+    """
 
     folder: Path
     identifier: str
@@ -72,7 +76,9 @@ class PreparedDataset:
     channels: int
 
     @classmethod
-    def load(cls, folder: Path) -> PreparedDataset:
+    def load(cls, folder: str | Path) -> PreparedDataset:
+        """Open an existing prepared folder and parse its plans and split."""
+        folder = Path(folder)
         metadata = read_json_object(folder / "prepared.json")
         if metadata.get("schema") != _DATA_SCHEMA:
             raise ContractError("unsupported prepared training dataset schema")
@@ -113,16 +119,22 @@ class PreparedDataset:
 
 
 def prepare_training_data(
-    source: Path,
-    destination: Path,
+    source: str | Path,
+    destination: str | Path,
     *,
-    plans_file: Path | None = None,
+    plans_file: str | Path | None = None,
     configuration: str | None = None,
     patch_size: tuple[int, ...] | None = None,
-    splits_file: Path | None = None,
+    splits_file: str | Path | None = None,
     fold: int | str = 0,
 ) -> PreparedDataset:
-    """Prepare a raw dataset with dataset.json, imagesTr and labelsTr."""
+    """Prepare a raw dataset with ``dataset.json``, ``imagesTr`` and ``labelsTr``.
+
+    The destination is created after all selected cases have been prepared.
+    Set ``fold`` to ``"all"`` to prepare every case for training.
+    """
+    source = Path(source)
+    destination = Path(destination)
     dataset = read_json_object(source / "dataset.json")
     semantics = parse_dataset_label_semantics(dataset)
     if len(semantics.all_labels) < 2:
@@ -219,7 +231,7 @@ def _prepare_case(
         del modalities
     else:
         image, properties = read_images(reader, case.image_files)
-    target = cast(Labels, read_segmentation(reader, label_file, properties))
+    target = read_segmentation(reader, label_file, properties)
     if target.shape != (1, *image.shape[1:]) or image.shape[0] != channels:
         raise ContractError("image channels or label shape do not match the dataset")
     maximum = semantics.ignore_label or semantics.all_labels[-1]
@@ -257,7 +269,7 @@ def _prepare_case(
     if sample_foreground:
         np.savez(
             folder / "foreground.npz",
-            *(_foreground_points(labels, label, rng) for label in semantics.all_labels[1:]),
+            *(_sample_points(labels, label, rng) for label in semantics.all_labels[1:]),
             allow_pickle=False,
         )
 
@@ -266,19 +278,20 @@ def _foreground_count(labels: Labels, maximum: int) -> int:
     return int(np.count_nonzero(labels) - np.count_nonzero(labels > maximum))
 
 
-def _foreground_points(
-    labels: Labels, label: int, rng: np.random.Generator
+def _sample_points(
+    labels: Labels, label: int, rng: np.random.Generator, *, exclude: bool = False
 ) -> npt.NDArray[np.int32]:
-    """Keep a uniform sample of voxel coordinates with bounded temporary storage."""
+    """Sample coordinates matching or excluding a label with bounded temporary storage."""
     values = labels.reshape(-1)
     sampled = np.empty(0, np.intp)
     seen = 0
     block_size = 1 << 20
     for start in range(0, len(values), block_size):
-        matches = np.flatnonzero(values[start : start + block_size] == label)
+        block = values[start : start + block_size]
+        matches = np.flatnonzero(block != label if exclude else block == label)
         count = len(matches)
         if count:
-            size = min(seen + count, _FOREGROUND_LIMIT)
+            size = min(seen + count, _SAMPLE_LIMIT)
             # The hypergeometric draw combines two uniform subsamples exactly.
             take = rng.hypergeometric(count, seen, size) if seen else size
             old = rng.choice(sampled, size - take, replace=False)
@@ -311,6 +324,9 @@ class PatchSampler:
         self._focus_cases = (
             _cases_with_foreground(data, self._focus_index) if self._focus_index is not None else ()
         )
+        ignore = data.semantics.ignore_label
+        self._annotations = {} if ignore is None else _training_annotations(data, ignore)
+        self._sample_cases = tuple(self._annotations) if self._annotations else data.split.train
 
         @lru_cache(maxsize=8)
         def load_case(identifier: str) -> tuple[FloatArray, Labels, tuple[Labels, ...]]:
@@ -337,10 +353,12 @@ class PatchSampler:
         channels = self._data.channels
         images = np.zeros((self._batch_size, *self._patch, channels), dtype=np.float32)
         targets = np.full((self._batch_size, *self._patch), -1, dtype=np.int32)
-        cases = self._data.split.train
+        cases = self._sample_cases
         rank = len(self._patch)
+        ignore = self._data.semantics.ignore_label
         for index in range(self._batch_size):
-            image, labels, class_locations = self._load_case(cases[int(rng.integers(len(cases)))])
+            case = cases[int(rng.integers(len(cases)))]
+            image, labels, class_locations = self._load_case(case)
             foreground = tuple(points for points in class_locations if points.size)
             center: tuple[int, ...] | None = None
             if (foreground or self._focus_cases) and rng.random() < 1 / 3:
@@ -350,6 +368,8 @@ class PatchSampler:
                     center = _sample_location(class_locations[self._focus_index], rng)
                 elif foreground:
                     center = _sample_location(foreground[int(rng.integers(len(foreground)))], rng)
+            if center is None and self._annotations:
+                center = _sample_location(self._annotations[case], rng)
             if rank == 2:
                 plane = center[0] if center is not None else int(rng.integers(len(labels)))
                 image, labels = image[plane], labels[plane]
@@ -366,11 +386,26 @@ class PatchSampler:
                 patch *= rng.uniform(0.9, 1.1, channels).astype(np.float32)
                 patch += rng.uniform(-0.1, 0.1, channels).astype(np.float32)
                 if self._spatial_augment and rng.random() < 1 / 3:
-                    _rotate_in_plane(images[index], targets[index], radians(rng.uniform(-10, 10)))
-        ignore = self._data.semantics.ignore_label
+                    _rotate_in_plane(
+                        images[index], targets[index], radians(rng.uniform(-10, 10)), ignore
+                    )
         if ignore is not None:
             targets[targets == ignore] = -1
         return images, targets
+
+
+def _training_annotations(data: PreparedDataset, ignore: int) -> dict[str, Labels]:
+    """Index bounded samples of annotated voxels from the prepared training split."""
+    rng = np.random.default_rng(0)
+    annotated: dict[str, Labels] = {}
+    for case in data.split.train:
+        _, labels = data.arrays(case)
+        points = _sample_points(labels, ignore, rng, exclude=True)
+        if points.size:
+            annotated[case] = points
+    if not annotated:
+        raise ContractError("the prepared training split contains no annotated voxels")
+    return annotated
 
 
 def _cases_with_foreground(data: PreparedDataset, index: int) -> tuple[str, ...]:
@@ -390,24 +425,30 @@ def _sample_location(points: Labels, rng: np.random.Generator) -> tuple[int, ...
     return tuple(int(value) for value in points[int(rng.integers(len(points)))])
 
 
-def _rotate_in_plane(image: FloatArray, labels: npt.NDArray[np.int32], angle: float) -> None:
-    """Rotate both tensors around the patch center while preserving handedness."""
+def _rotate_in_plane(
+    image: FloatArray, labels: npt.NDArray[np.int32], angle: float, ignore: int | None
+) -> None:
+    """Rotate both tensors around the patch center while retaining any sparse annotation."""
     transform = np.eye(labels.ndim)
     transform[-2:, -2:] = ((cos(angle), -sin(angle)), (sin(angle), cos(angle)))
     center = (np.asarray(labels.shape, dtype=np.float64) - 1) * 0.5
     offset = center - transform @ center
-    for channel in range(image.shape[-1]):
-        values = image[..., channel]
-        affine_transform(values.copy(), transform, offset, output=values, order=1, prefilter=False)
+    rotated = np.empty_like(labels)
     affine_transform(
-        labels.copy(),
+        labels,
         transform,
         offset,
-        output=labels,
+        output=rotated,
         order=0,
         cval=-1,
         prefilter=False,
     )
+    if ignore is not None and not np.any((rotated >= 0) & (rotated != ignore)):
+        return
+    labels[...] = rotated
+    for channel in range(image.shape[-1]):
+        values = image[..., channel]
+        affine_transform(values.copy(), transform, offset, output=values, order=1, prefilter=False)
 
 
 def _patch_slices(
@@ -432,7 +473,7 @@ def _patch_slices(
     return tuple(source), tuple(destination)
 
 
-def _select_split(cases: Sequence[str], fold: int | str, path: Path | None) -> Split:
+def _select_split(cases: Sequence[str], fold: int | str, path: str | Path | None) -> Split:
     validate_folds((fold,))
     if isinstance(fold, str):
         return Split(tuple(cases), ())
@@ -447,7 +488,7 @@ def _select_split(cases: Sequence[str], fold: int | str, path: Path | None) -> S
             tuple(sorted(validation)),
         )
     try:
-        payload: object = json.loads(path.read_text(encoding="utf-8"))
+        payload: object = json.loads(Path(path).read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ContractError(f"invalid splits file: {path}") from error
     splits = parse_sequence(payload, name="splits")

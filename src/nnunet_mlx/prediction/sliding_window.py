@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
+from medmlx_core.typing import IndexedUpdates, MlxRuntime
 
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.runtime import InferenceRuntime, import_mlx
-from nnunet_mlx.runtime_types import ScatterUpdate
+from nnunet_mlx.runtime import import_mlx
 
 if TYPE_CHECKING:
     from mlx.core import Dtype, array
@@ -347,7 +347,7 @@ def predict_labels(
     def finalize(start: int, stop: int, logits: array, normalizer: array) -> None:
         """Reduce normalized logits to class labels for one completed slab."""
         del start, stop
-        labels, _ = normalized_labels(
+        labels = normalized_labels(
             logits, normalizer, round_to_float16=accumulation == "nnunet-fp16",
         )
         mx.eval(labels)
@@ -434,7 +434,6 @@ def _accumulate_logits(
     spatial = padded.shape[1:]
     steps = compute_steps(spatial, patch, step_fraction=step_fraction)
     mx, _ = import_mlx()
-    inference_runtime = cast(InferenceRuntime, mx)
     upstream_fp16 = accumulation == "nnunet-fp16"
     dtype = mx.float16 if upstream_fp16 else mx.float32
     window_shape = (patch[0], *spatial[1:])
@@ -461,7 +460,7 @@ def _accumulate_logits(
     def forward(slices: tuple[slice, ...]) -> array:
         """Run the model and requested mirroring for one input tile."""
         return mirrored_prediction(
-            model, volume[slices][None], axes, inference_runtime, num_classes=num_classes,
+            model, volume[slices][None], axes, mx, num_classes=num_classes,
             constant_input=host_tiles is not None and _spatially_constant(host_tiles[:, *slices]),
         )
 
@@ -485,7 +484,7 @@ def _accumulate_logits(
             updated = add_weighted_tile(logits[local], prediction[0], gaussian)
             mx.async_eval(updated)
         else:
-            logits = cast(ScatterUpdate, logits.at[local]).add(prediction[0] * gaussian)
+            logits = cast(IndexedUpdates, logits.at)[local].add(prediction[0] * gaussian)
         # The update retains the operands it needs. Extra Python references
         # can keep tile buffers alive during the next forward.
         del prediction
@@ -497,7 +496,7 @@ def _accumulate_logits(
             mx.eval(updated)
             logits[local] = updated
             del updated
-        normalizer = cast(ScatterUpdate, normalizer.at[local]).add(gaussian)
+        normalizer = cast(IndexedUpdates, normalizer.at)[local].add(gaussian)
         mx.async_eval(logits, normalizer)
         if finish_update_first:
             queue_next(index)
@@ -554,7 +553,7 @@ def mirrored_prediction(
     model: PredictionModel,
     tile: array,
     axes: tuple[int, ...],
-    mx: InferenceRuntime,
+    mx: MlxRuntime,
     *,
     num_classes: int,
     constant_input: bool = False,
@@ -599,7 +598,7 @@ def mirrored_prediction(
 
 
 def _validate_prediction(
-    prediction: object, expected_shape: tuple[int, ...], mx: InferenceRuntime
+    prediction: object, expected_shape: tuple[int, ...], mx: MlxRuntime
 ) -> None:
     """Check each output before broadcasting or host staging can hide a mismatch."""
     if not isinstance(prediction, cast("type[array]", mx.array)) or prediction.dtype != mx.float32:

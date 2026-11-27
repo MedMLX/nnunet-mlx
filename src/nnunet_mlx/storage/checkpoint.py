@@ -143,13 +143,23 @@ def load_inference_checkpoint(
     """
 
     source = Path(directory)
+    state = read_inference_checkpoint_state(source)
+    _load_model_weights(source, model)
+    return state
+
+
+def read_inference_checkpoint_state(directory: str | Path) -> InferenceCheckpointState:
+    """Check the checkpoint metadata and file set without loading model weights."""
+    source = Path(directory)
     payload = _read_checkpoint_payload(source)
     schema = payload.get("schema_version")
     if schema == SCHEMA_VERSION:
         _verify_file_set(source, _PAYLOAD_FILES)
         # Existing native checkpoints retain their original file-set contract.
         # Only pretrained identity, epoch and mirroring metadata are consumed.
-        state = InferenceCheckpointState(
+        if payload.get("source_nnunet_version") != SOURCE_NNUNET_VERSION:
+            raise ContractError("checkpoint source nnU-Net version does not match")
+        return InferenceCheckpointState(
             identity=_checkpoint_identity(payload.get("identity")),
             current_epoch=_integer(payload.get("current_epoch"), name="current epoch"),
             spatial_dims=_integer(payload.get("spatial_dims"), name="spatial dimensions"),
@@ -158,15 +168,10 @@ def load_inference_checkpoint(
             ),
             dropped_source_keys=("best_ema", "optimizer_config", "schedule_config"),
         )
-        if payload.get("source_nnunet_version") != SOURCE_NNUNET_VERSION:
-            raise ContractError("checkpoint source nnU-Net version does not match")
-    elif schema == INFERENCE_SCHEMA_VERSION:
+    if schema == INFERENCE_SCHEMA_VERSION:
         _verify_file_set(source, _INFERENCE_PAYLOAD_FILES)
-        state = InferenceCheckpointState.from_payload(payload)
-    else:
-        raise ContractError(f"unsupported inference checkpoint schema {schema!r}")
-    _load_model_weights(source, model)
-    return state
+        return InferenceCheckpointState.from_payload(payload)
+    raise ContractError(f"unsupported inference checkpoint schema {schema!r}")
 
 
 def checkpoint_weights_signature(directory: str | Path) -> list[int]:

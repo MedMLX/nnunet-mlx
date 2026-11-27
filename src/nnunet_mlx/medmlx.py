@@ -1,9 +1,8 @@
-"""``run`` and ``load_model`` for converted MLX model folders.
+"""One-shot and reusable prediction for native MLX model folders.
 
 The released models in ``nnunet_mlx.named_models`` run through the same path.
 Prediction uses :class:`ModelFolderPredictor` with nnU-Net v2.8.1's
-sliding-window accumulation and checkpoint mirroring; the prediction CLI builds
-the same predictor through :func:`predictor`. Label metadata uses the
+sliding-window accumulation and checkpoint mirroring. Label metadata uses the
 package's shared dataset contract. Importing this module does not initialize MLX.
 
 The operation reports failures as ``medmlx_core`` errors, whose type names reach
@@ -15,7 +14,6 @@ as ``__cause__``.
 from __future__ import annotations
 
 import os
-import tempfile
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -28,12 +26,11 @@ from medmlx_core.files import PathLike
 from medmlx_core.outputs import Artifact, artifact
 from medmlx_core.weights import weights_revision
 
-from nnunet_mlx.contracts import parse_boolean, parse_mapping, parse_number, parse_sequence
+from nnunet_mlx.contracts import parse_boolean, parse_number, parse_sequence
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.medmlx_types import RunResult
 
 if TYPE_CHECKING:
-    from nnunet_mlx.model.folder import ModelBundle
     from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
 
 Failure = Literal["input", "asset", "dependency", "execution"]
@@ -42,8 +39,9 @@ Failure = Literal["input", "asset", "dependency", "execution"]
 ACCUMULATION = "nnunet-fp16"
 
 SEGMENTATION_STEM = "mask"
-PROBABILITIES = "probabilities.npz"
-PROBABILITY_PROPERTIES = "probabilities.pkl"
+_PROBABILITY_STEM = "probabilities"
+PROBABILITIES = f"{_PROBABILITY_STEM}.npz"
+PROBABILITY_PROPERTIES = f"{_PROBABILITY_STEM}.pkl"
 NIFTI_ENDINGS = (".nii.gz", ".nii")
 SOURCE_FLOAT32 = "source-fp32"
 _WEIGHTS_HINT = (
@@ -116,22 +114,6 @@ def readiness() -> dict[str, object]:
             "reinstalling medmlx[segment].",
         }
     return {"ready": True, "reason": None, "setup_hint": None}
-
-
-def predictor(bundle: ModelBundle, *, step_fraction: float) -> ModelFolderPredictor:
-    """Return the predictor MedMLX runs and the prediction CLI use for ``bundle``.
-
-    Windows and folds accumulate in float16 as in nnU-Net v2.8.1 (``nnunet-fp16``),
-    and models run uncompiled. ``ModelFolderPredictor``'s own float32
-    accumulation default is for direct Python use.
-    """
-    from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
-
-    return ModelFolderPredictor(
-        bundle,
-        accumulation=ACCUMULATION,
-        step_fraction=step_fraction,
-    )
 
 
 def check_request(
@@ -279,7 +261,7 @@ def run(
 
 def segment_case(
     *,
-    prepared: _PreparedState | None = None,
+    prepared: ModelFolderPredictor | None = None,
     grid_of: str = "image_paths",
     weights_path: PathLike,
     image_paths: Sequence[PathLike],
@@ -314,12 +296,16 @@ def segment_case(
     )
     folder = Path(weights_path).expanduser()
     with _reported_as("asset"):
-        if not folder.is_dir():
-            raise ContractError(f"nnU-Net model folder does not exist: {folder}; {_WEIGHTS_HINT}")
-    with _reported_as("asset"):
-        if not (folder / "dataset.json").is_file():
-            raise ContractError(f"model folder lacks dataset.json: {folder}; {_WEIGHTS_HINT}")
-        dataset_json = read_json_object(folder / "dataset.json")
+        if prepared is None:
+            if not folder.is_dir():
+                raise ContractError(
+                    f"nnU-Net model folder does not exist: {folder}; {_WEIGHTS_HINT}"
+                )
+            if not (folder / "dataset.json").is_file():
+                raise ContractError(f"model folder lacks dataset.json: {folder}; {_WEIGHTS_HINT}")
+            dataset_json = read_json_object(folder / "dataset.json")
+        else:
+            dataset_json = prepared.bundle.dataset_json
         labels = dataset_labels(dataset_json)
         file_ending = dataset_json.get("file_ending")
         if file_ending not in NIFTI_ENDINGS:
@@ -334,7 +320,6 @@ def segment_case(
     from nnunet_mlx.prediction.export import (
         ExportedFiles,
         completion_receipt_path,
-        publish_prediction,
         require_prediction_destination,
     )
 
@@ -344,24 +329,22 @@ def segment_case(
         targets["probability_properties"] = output / PROBABILITY_PROPERTIES
     generation = ExportedFiles(targets["mask"], probabilities=output / PROBABILITIES,
                               properties=output / PROBABILITY_PROPERTIES)
-    final_files = ExportedFiles(targets["mask"], probabilities=targets.get("probabilities"),
-                               properties=targets.get("probability_properties"))
+    prefix = output / SEGMENTATION_STEM
     with _reported_as("input"):
         require_prediction_destination(generation, overwrite=overwrite, input_files=images,
-                                       extra_paths=(completion_receipt_path(output / "mask"),))
+                                       extra_paths=(completion_receipt_path(prefix),))
 
     from nnunet_mlx.runtime import import_mlx, runtime_info
 
     with _reported_as("dependency"):
         backend = runtime_info().backend
-    from nnunet_mlx.model.folder import load_model_bundle
-
-    with _reported_as("dependency"):
         mx, _ = import_mlx()
-    if prepared is None:
-        mx.reset_peak_memory()
     started = perf_counter()
     if prepared is None:
+        from nnunet_mlx.model.folder import load_model_bundle
+        from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
+
+        mx.reset_peak_memory()
         with _reported_as("asset"):
             bundle = load_model_bundle(
                 folder,
@@ -375,26 +358,20 @@ def segment_case(
             bundle = replace(bundle, mirroring_axes=())
         model_load_s = perf_counter() - started
         with _reported_as("execution"):
-            case_predictor = predictor(bundle, step_fraction=float(step_fraction))
+            case_predictor = ModelFolderPredictor(
+                bundle, step_fraction=step_fraction, accumulation=ACCUMULATION
+            )
     else:
-        bundle, case_predictor = prepared.bundle, prepared.predictor
+        bundle, case_predictor = prepared.bundle, prepared
         model_load_s = 0.0
     with _reported_as("execution"):
-        output.mkdir(parents=True, exist_ok=True)
-        # Predict into a private directory, then publish under the runner's output names.
-        with tempfile.TemporaryDirectory(prefix=".nnunet-mlx-", dir=output) as staging:
-            result = case_predictor.predict_case(
-                images,
-                Path(staging) / "case",
-                save_probabilities=save_probabilities,
-                overwrite=True,
-            )
-            receipt = read_json_object(completion_receipt_path(Path(staging) / "case"))
-            publish_prediction(
-                result.files, final_files, generation=generation, output_prefix=output / "mask",
-                overwrite=overwrite, input_files=images,
-                completion_identity=parse_mapping(receipt["identity"], name="prediction identity"),
-            )
+        result = case_predictor.predict_case(
+            images,
+            prefix,
+            save_probabilities=save_probabilities,
+            overwrite=overwrite,
+            probability_stem=_PROBABILITY_STEM,
+        )
     metrics: dict[str, object] = {}
     if result.metrics is not None:
         metrics = {
@@ -431,7 +408,7 @@ def segment_case(
             "checkpoints": [item.to_payload() for item in bundle.checkpoints],
             "mirroring_axes": list(bundle.mirroring_axes),
             "step_fraction": step_fraction,
-            "accumulation": ACCUMULATION,
+            "accumulation": result.accumulation,
             "decoding": result.decoding,
             "save_probabilities": save_probabilities,
             "backend": backend,
@@ -441,14 +418,6 @@ def segment_case(
     }
     return payload
 
-
-
-@dataclass(frozen=True)
-class _PreparedState:
-    """The only model state retained between cases of a prepared runner."""
-
-    bundle: ModelBundle
-    predictor: ModelFolderPredictor
 
 
 def _source_signature(
@@ -503,6 +472,7 @@ class NnUNetModel:
     ) -> None:
         """Load and bind the selected model once; cases are supplied to :meth:`run`."""
         from nnunet_mlx.model.folder import load_model_bundle
+        from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
         from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
         from nnunet_mlx.runtime import import_mlx, runtime_info
 
@@ -535,8 +505,9 @@ class NnUNetModel:
                 raise ContractError("Model files changed while loading; load the model again")
         if not use_mirroring:
             bundle = replace(bundle, mirroring_axes=())
-        self._state: _PreparedState | None = _PreparedState(
-            bundle, predictor(bundle, step_fraction=step_fraction))
+        self._state: ModelFolderPredictor | None = ModelFolderPredictor(
+            bundle, step_fraction=step_fraction, accumulation=ACCUMULATION
+        )
 
     def run(
         self, *, image_paths: Sequence[PathLike], output_dir: PathLike,

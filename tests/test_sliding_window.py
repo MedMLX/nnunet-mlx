@@ -35,7 +35,6 @@ def test_mirrored_running_sum_preserves_order_bitwise(classes: int) -> None:
     from itertools import combinations
 
     from nnunet_mlx.prediction.sliding_window import mirrored_prediction
-    from nnunet_mlx.runtime import InferenceRuntime
 
     mx, nn = import_mlx()
     mx.random.seed(715)
@@ -54,7 +53,7 @@ def test_mirrored_running_sum_preserves_order_bitwise(classes: int) -> None:
         expected += output
     expected /= len(outputs)
     actual = mirrored_prediction(
-        model, tile, (0, 1, 2), cast(InferenceRuntime, mx), num_classes=classes,
+        model, tile, (0, 1, 2), mx, num_classes=classes,
     )
     mx.eval(actual)
     np.testing.assert_array_equal(host_array(actual), expected)

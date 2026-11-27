@@ -2,9 +2,9 @@
 
 Activations are channels-last: (B, D, H, W, C) for 3-D and (B, H, W, C) for 2-D,
 unlike upstream's channels-first (B, C, *spatial). Convolution weights use MLX's
-(C_out, *kernel, C_in) layout; native safetensors checkpoints use the
-parameter names defined here. Modules return logits for the
-highest-resolution decoder head only (upstream's ``deep_supervision=False``).
+(C_out, *kernel, C_in) layout. Native safetensors checkpoints use the parameter
+names defined here. The default forward returns the finest decoder logits.
+Training can also request auxiliary logits for deep supervision.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ else:
 
 type NetworkSpec = PlainConvUNetSpec | ResidualEncoderUNetSpec
 type Network = PlainConvUNet | ResidualEncoderUNet
-type NetworkOutput = array
 type ArrayTransform = Callable[[array], array]
 
 
@@ -471,7 +470,7 @@ class PlainConvUNet(MlxModule):
         self.inference_precision = "fast-fp32"
         self.activation_checkpointing = 0
         self._build_encoder(spec)
-        self._build_decoder(spec)
+        self._decoders = _build_decoder(self, spec)
 
     def _build_encoder(self, spec: PlainConvUNetSpec) -> None:
         """Attach the plain encoder stages from the topology."""
@@ -492,12 +491,17 @@ class PlainConvUNet(MlxModule):
             in_channels = out_channels
         self._stages = len(spec.features)
 
-    def _build_decoder(self, spec: PlainConvUNetSpec) -> None:
-        """Attach decoder stages and record their count."""
-        self._decoders = _build_decoder(self, spec)
-
-    def __call__(self, values: array) -> NetworkOutput:
+    def __call__(self, values: array) -> array:
         """Encode channels-last inputs and decode the highest-resolution logits."""
+        return self._forward(values)
+
+    def forward_supervised(self, values: array) -> tuple[array, ...]:
+        """Return the final and auxiliary logits in order of decreasing resolution."""
+        auxiliary: list[array] = []
+        final = self._forward(values, auxiliary=auxiliary)
+        return (final, *reversed(auxiliary))
+
+    def _forward(self, values: array, *, auxiliary: list[array] | None = None) -> array:
         recompute = self.activation_checkpointing if self.training else 0
         skips: list[array] = []
         hidden = values
@@ -510,6 +514,7 @@ class PlainConvUNet(MlxModule):
             skips,
             self._decoders,
             recompute=recompute,
+            auxiliary=auxiliary,
         )
 
 
@@ -748,14 +753,29 @@ class ResidualEncoderUNet(MlxModule):
         self._stages = len(spec.features)
         self._decoders = _build_decoder(self, spec)
 
-    def __call__(self, values: array) -> NetworkOutput:
+    def __call__(self, values: array) -> array:
         """Run the residual encoder and decoder with its normal final upsample."""
         return self.forward_with_final_upsample(values, final_upsample=None)
 
     def forward_with_final_upsample(
         self, values: array, *, final_upsample: ArrayTransform | None
-    ) -> NetworkOutput:
+    ) -> array:
         """Run residual inference with an optional replacement final upsample."""
+        return self._forward(values, final_upsample=final_upsample)
+
+    def forward_supervised(self, values: array) -> tuple[array, ...]:
+        """Return the final and auxiliary logits in order of decreasing resolution."""
+        auxiliary: list[array] = []
+        final = self._forward(values, auxiliary=auxiliary)
+        return (final, *reversed(auxiliary))
+
+    def _forward(
+        self,
+        values: array,
+        *,
+        final_upsample: ArrayTransform | None = None,
+        auxiliary: list[array] | None = None,
+    ) -> array:
         if (
             self.inference_input_shape is not None
             and tuple(values.shape) != self.inference_input_shape
@@ -778,6 +798,7 @@ class ResidualEncoderUNet(MlxModule):
             final_upsample=final_upsample,
             materialize=materialize,
             recompute=recompute,
+            auxiliary=auxiliary,
         )
 
     def final_upsample(self) -> MlxModule:
@@ -800,7 +821,7 @@ class _CompiledResidualInference:
             inputs=final_upsample.state,
         )
 
-    def __call__(self, values: array) -> NetworkOutput:
+    def __call__(self, values: array) -> array:
         """Run the model with the compiled final upsample."""
         return self.model.forward_with_final_upsample(
             values,
@@ -895,10 +916,12 @@ def _decode(
     final_upsample: ArrayTransform | None = None,
     materialize: bool = False,
     recompute: int = 0,
-) -> NetworkOutput:
+    auxiliary: list[array] | None = None,
+) -> array:
     """Pop encoder ``skips`` from deepest to shallowest and return the final head.
 
-    Intermediate segmentation heads are not evaluated (no deep supervision).
+    Deep supervision collects intermediate logits in ``auxiliary``, excluding
+    the coarsest decoder head.
     ``final_upsample`` optionally replaces the last stage's upsample module, and
     ``materialize`` evaluates each stage to bound the Metal graph size.
     Consumed skips leave the caller-owned list before evaluation, so Python
@@ -928,13 +951,15 @@ def _decode(
                 hidden = decoder(_mx().concatenate((hidden, skip), axis=-1))
         del skip
         _eval_stage(hidden, enabled=materialize)
+        if auxiliary is not None and 0 < index < decoders - 1:
+            auxiliary.append(getattr(owner, f"seg{index}")(hidden))
     return getattr(owner, f"seg{decoders - 1}")(hidden)
 
 
 def configure_training_forward(
-    model: Network, *, recompute: bool, recompute_stages: int = 0,
+    model: Network, *, recompute: bool, recompute_stages: int = 0, deep_supervision: bool = False,
 ) -> None:
-    """Enable gradients and recompute the selected highest-resolution stages."""
+    """Configure training normalization, activation recomputation, and active heads."""
     stages = len(model.spec.features)
     if not 0 <= recompute_stages <= stages:
         raise ContractError(f"recompute_stages must be between 0 and {stages}")
@@ -942,8 +967,11 @@ def configure_training_forward(
     for _, layer in model.named_modules():
         if type(layer) is SpatialInstanceNorm:
             layer.use_differentiable_ops = True
-    for index in range(len(model.spec.features) - 2):
-        # Lower-resolution heads are retained for strict checkpoint loading.
+    # Keep every head in the checkpoint and exclude unused heads from optimization.
+    inactive_heads = stages - 2
+    if deep_supervision:
+        inactive_heads = min(1, inactive_heads)
+    for index in range(inactive_heads):
         head = cast(MlxModule, getattr(model, f"seg{index}"))
         head.freeze()
 

@@ -55,8 +55,8 @@ def _kernel() -> MetalKernel:
 
 def normalized_labels(
     logits: array, normalizer: array, *, round_to_float16: bool = False,
-) -> tuple[array, array]:
-    """Return lazy uint16 spatial labels and a scalar validity flag on Metal.
+) -> array:
+    """Return lazy uint16 spatial labels on Metal.
 
     Inputs are channels-last `(D,H,W,C)` accumulated logits and `(D,H,W,1)`
     positive Gaussian weights, both float16 or both float32. Each quotient uses
@@ -65,9 +65,8 @@ def normalized_labels(
     Equal scores choose the earliest channel. The same three spatial axes and
     their padding remain intact in the output.
 
-    A nonpositive/nonfinite denominator or nonfinite normalized score writes
-    ``INVALID_LABEL`` and makes the scalar flag false. Callers must evaluate
-    that flag and reject invalid results before exporting or casting labels.
+    A nonpositive or non-finite denominator, or a non-finite normalized score,
+    produces ``INVALID_LABEL``. The caller checks labels after cropping minimum padding.
     """
     import mlx.core as mx
 
@@ -84,7 +83,7 @@ def normalized_labels(
     row_voxels = min(voxels, _ROW_VOXELS)
     row_threads = ((row_voxels + 3) // 4) * 128
     rows = (voxels + _ROW_VOXELS - 1) // _ROW_VOXELS
-    labels = _kernel()(
+    return _kernel()(
         inputs=[logits, normalizer],
         template=[("N", voxels), ("C", classes), ("ROUND_HALF", round_to_float16),
                   ("ROW_VOXELS", _ROW_VOXELS)],
@@ -94,4 +93,3 @@ def normalized_labels(
         output_dtypes=[mx.uint16],
         stream=mx.gpu,
     )[0]
-    return labels, mx.all(labels != INVALID_LABEL)

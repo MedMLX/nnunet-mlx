@@ -117,6 +117,7 @@ def prediction_output_files(
     file_ending: str,
     image_reader_writer: str,
     save_probabilities: bool,
+    probability_stem: str | None = None,
 ) -> ExportedFiles:
     """Return the complete output-file contract for one raw prediction."""
 
@@ -124,13 +125,18 @@ def prediction_output_files(
     if not file_ending.startswith("."):
         raise ContractError("dataset file ending must start with a dot")
     segmentation = Path(f"{prefix}{file_ending}")
+    probability_prefix = prefix
+    if probability_stem is not None:
+        if Path(probability_stem).name != probability_stem or probability_stem in {"", ".", ".."}:
+            raise ContractError("probability_stem must be a filename stem")
+        probability_prefix = prefix.with_name(probability_stem)
     return ExportedFiles(
         segmentation=segmentation,
         image_properties=image_reader_output_sidecar(
             image_reader_writer, segmentation
         ),
-        probabilities=Path(f"{prefix}.npz") if save_probabilities else None,
-        properties=Path(f"{prefix}.pkl") if save_probabilities else None,
+        probabilities=Path(f"{probability_prefix}.npz") if save_probabilities else None,
+        properties=Path(f"{probability_prefix}.pkl") if save_probabilities else None,
     )
 
 
@@ -454,6 +460,7 @@ def export_prediction(
     overwrite: bool,
     completion_identity: Mapping[str, object] | None = None,
     input_files: Sequence[str | Path] = (),
+    probability_stem: str | None = None,
 ) -> ExportedFiles:
     """Write a prediction and its completion receipt using staged outputs.
 
@@ -478,6 +485,8 @@ def export_prediction(
             the ``.pkl`` sidecar.
         input_files: Additional input artifacts protected from output aliases,
             including ensemble probability files and their properties sidecars.
+        probability_stem: Use this basename for probabilities and their sidecar
+            in the same directory as the segmentation.
 
     Raises:
         ContractError: If outputs exist and ``overwrite`` is false, the identity is
@@ -485,12 +494,12 @@ def export_prediction(
     """
     files = prediction_output_files(
         output_prefix, file_ending=file_ending, image_reader_writer=image_reader_writer,
-        save_probabilities=prediction.probabilities is not None,
+        save_probabilities=prediction.probabilities is not None, probability_stem=probability_stem,
     )
     prefix = Path(output_prefix)
     generation = prediction_output_files(
         prefix, file_ending=file_ending, image_reader_writer=image_reader_writer,
-        save_probabilities=True,
+        save_probabilities=True, probability_stem=probability_stem,
     )
     inputs = (*_identity_inputs(completion_identity), *input_files)
     require_prediction_destination(generation, overwrite=overwrite, input_files=inputs,

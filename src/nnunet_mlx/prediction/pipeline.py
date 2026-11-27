@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from nnunet_mlx.contracts import parse_integer, parse_string
+from nnunet_mlx.data.cases import RawInputCase, discover_input_cases
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.model.folder import ModelBundle
 from nnunet_mlx.prediction.export import (
@@ -40,7 +41,6 @@ from nnunet_mlx.prediction.io import (
     PreparedPredictionInput,
     prediction_input_signature,
     prepare_prediction_input,
-    restore_and_export_prediction,
 )
 from nnunet_mlx.prediction.sliding_window import compute_steps
 from nnunet_mlx.runtime import compile_inference_model
@@ -103,14 +103,6 @@ class RawPredictionResult:
             "accumulation": self.accumulation,
             "decoding": self.decoding,
         }
-
-
-@dataclass(frozen=True, slots=True)
-class RawInputCase:
-    """One case of a raw input folder: its identifier and image files in channel order."""
-
-    identifier: str
-    image_files: tuple[Path, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,9 +252,10 @@ class ModelFolderPredictor:
         output_prefix: str | Path,
         *,
         previous_stage_file: str | Path | None = None,
-        save_probabilities: bool,
-        overwrite: bool,
+        save_probabilities: bool = False,
+        overwrite: bool = False,
         logits_file: str | Path | None = None,
+        probability_stem: str | None = None,
     ) -> RawPredictionResult:
         """Predict one raw case and export labels (and optionally probabilities).
 
@@ -280,6 +273,8 @@ class ModelFolderPredictor:
                 ``(C, *spatial)`` in preprocessed space (before resampling back to
                 the input grid), as a ``.npy`` stream: float16 with ``nnunet-fp16``
                 accumulation, float32 otherwise.
+            probability_stem: Optional basename for both probability files in the
+                output directory. The output prefix supplies the default basename.
 
         Raises:
             ContractError: If outputs or ``logits_file`` already exist without
@@ -293,6 +288,7 @@ class ModelFolderPredictor:
             file_ending=self.bundle.file_ending,
             image_reader_writer=self.bundle.image_reader_writer,
             save_probabilities=True,
+            probability_stem=probability_stem,
         )
         inputs = (*image_files,
                   *((previous_stage_file,) if previous_stage_file is not None else ()))
@@ -345,6 +341,7 @@ class ModelFolderPredictor:
             save_probabilities=save_probabilities,
             overwrite=overwrite,
             completion_identity=identity,
+            probability_stem=probability_stem,
         )
         restoration_export_s = perf_counter() - export_started + device_restoration_s
         if logits_path is not None:
@@ -396,8 +393,8 @@ class ModelFolderPredictor:
         output_folder: str | Path,
         *,
         previous_stage_folder: str | Path | None = None,
-        save_probabilities: bool,
-        overwrite: bool,
+        save_probabilities: bool = False,
+        overwrite: bool = False,
         continue_existing: bool = False,
         num_parts: int = 1,
         part_id: int = 0,
@@ -755,31 +752,28 @@ class ModelFolderPredictor:
         save_probabilities: bool,
         overwrite: bool,
         completion_identity: Mapping[str, object],
+        probability_stem: str | None = None,
     ) -> ExportedFiles:
         """Restore and export a prediction with its completion identity."""
-        if restored is not None:
-            return export_prediction(
-                restored,
+        if restored is None:
+            if logits is None:
+                raise AssertionError("prediction produced neither logits nor restored labels")
+            restored = restore_prediction(
+                logits,
                 properties,
-                output_prefix,
-                file_ending=self.bundle.file_ending,
-                image_reader_writer=self.bundle.image_reader_writer,
-                overwrite=overwrite,
-                completion_identity=completion_identity,
+                self.bundle.plans,
+                self.bundle.semantics,
+                return_probabilities=save_probabilities,
             )
-        if logits is None:
-            raise AssertionError("prediction produced neither logits nor restored labels")
-        return restore_and_export_prediction(
-            logits,
+        return export_prediction(
+            restored,
             properties,
             output_prefix,
-            plans=self.bundle.plans,
-            semantics=self.bundle.semantics,
             file_ending=self.bundle.file_ending,
             image_reader_writer=self.bundle.image_reader_writer,
-            save_probabilities=save_probabilities,
             overwrite=overwrite,
             completion_identity=completion_identity,
+            probability_stem=probability_stem,
         )
 
     def _submit_export(
@@ -946,47 +940,6 @@ def _completed_export(
     """Collect one completed export future into a case result."""
     plan, shape, future = pending
     return _case_result(plan, shape, future.result(), folds)
-
-
-def discover_input_cases(input_folder: str | Path, file_ending: str) -> tuple[RawInputCase, ...]:
-    """Group split-dataset files by case and numeric modality suffix.
-
-    Files are named ``<case>_<NNNN><file_ending>`` with a four-digit modality index;
-    each case's indices must be contiguous from ``0000``.
-
-    Raises:
-        ContractError: If the folder is missing or empty, a name lacks the suffix, a
-            channel is duplicated, or a case has a gap in its channels.
-    """
-
-    folder = Path(input_folder)
-    if not folder.is_dir():
-        raise ContractError(f"prediction input folder does not exist: {folder}")
-    grouped: dict[str, dict[int, Path]] = {}
-    for path in sorted(folder.iterdir()):
-        if not path.is_file() or not path.name.endswith(file_ending):
-            continue
-        stem = path.name[: -len(file_ending)]
-        if len(stem) < 6 or stem[-5] != "_" or not stem[-4:].isdigit():
-            raise ContractError(f"prediction input {path.name!r} lacks a four-digit channel suffix")
-        identifier = stem[:-5]
-        channel = int(stem[-4:])
-        if not identifier or channel in grouped.setdefault(identifier, {}):
-            raise ContractError(f"prediction input channel is ambiguous: {path.name}")
-        grouped[identifier][channel] = path
-    if not grouped:
-        raise ContractError(f"prediction input folder contains no {file_ending!r} channel files")
-    return tuple(
-        _raw_input_case(identifier, channels) for identifier, channels in sorted(grouped.items())
-    )
-
-
-def _raw_input_case(identifier: str, channels: Mapping[int, Path]) -> RawInputCase:
-    """Require contiguous channel indices and build one ordered input case."""
-    indices = sorted(channels)
-    if indices != list(range(len(indices))):
-        raise ContractError(f"prediction case {identifier!r} channels must be contiguous from 0000")
-    return RawInputCase(identifier, tuple(channels[index] for index in indices))
 
 
 def _validate_prediction_partition(*, part_id: object, num_parts: object) -> None:

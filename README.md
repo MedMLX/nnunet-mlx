@@ -122,15 +122,20 @@ To train on all cases, pass `--fold all` at preparation and prediction.
 `train` uses foreground-aware patch sampling and validates on whole held-out
 cases. `metrics.json` records training loss and foreground Dice. Continue from
 the last completed epoch with `nnunet-mlx train prepared mlx-model --resume --epochs 150`.
-Use `--initialize-from` to start from an MLX checkpoint with the same topology and
-label order. `--precision bfloat16` and `--recompute` reduce training memory.
+To start a new run from saved weights, pass
+`--initialize-from mlx-model/fold_0/checkpoint_best`. Keep the checkpoint with its
+model folder's `plans.json` and `dataset.json`. The prepared dataset must use the
+same network topology and output label order.
 
-Use `--recompute-stages 2` to recompute only the two highest-resolution stages
-in each path. `--cosine-lr` adds warmup and cosine decay. `--focus-label 2`
+`--precision bfloat16` and `--recompute` reduce training memory.
+Use `--recompute-stages 2` to recompute the two highest-resolution stages in
+each path. `--cosine-lr` adds warmup and cosine decay. `--focus-label 2`
 prioritizes label 2 in foreground sampling, and `--balanced-ce` weights class
 cross-entropy by the inverse square root of patch voxel counts.
-`--spatial-augment` replaces mirroring with small in-plane rotations. Pass
-`--checkpoint checkpoint_best` to predict with the best validation epoch.
+`--spatial-augment` replaces mirroring with small in-plane rotations. The experimental
+`--deep-supervision` option adds loss terms at intermediate decoder resolutions.
+Prediction uses the full-resolution output. Pass
+`--checkpoint checkpoint_best` to predict with the best epoch from a run with validation.
 
 ### Convert a PyTorch-trained model
 
@@ -275,17 +280,35 @@ segmentation quality.
 
 ### Python API
 
-The names exported from `nnunet_mlx` are the supported Python API; other modules may
-change between releases.
+| Task | CLI | Python |
+| --- | --- | --- |
+| Prepare raw training cases | `prepare-training` | `prepare_training_data` |
+| Train, resume, or initialize from a checkpoint | `train` | `train_model` |
+| Predict with a native model folder | `model predict`, `model predict-folder` | `run`, or `load_model` for repeated cases |
+| Control file, folder, or in-memory prediction | `model predict`, `model predict-folder` | `ModelFolderPredictor` with `load_model_bundle` |
+| Convert an upstream PyTorch model folder | `convert` | `convert_trained_model`, `read_conversion_manifest` |
+| Predict and cache upstream model conversion | `predict` | Convert once, then open the native folder |
+| Combine predictions or apply postprocessing rules | `model ensemble`, `model apply-postprocessing` | Use the CLI |
+| Download registered weights or check Metal | `download`, `runtime info` | Named model runners download their weights |
+
+```python
+from nnunet_mlx import prepare_training_data, train_model
+
+prepared = prepare_training_data("Dataset001_Example", "prepared")
+checkpoint = train_model(prepared, "mlx-model", epochs=100)
+```
+
+`prepare_training_data` returns a `PreparedDataset` with its folder, split, and
+selected plans. `train_model` accepts that object or its folder. Pass a
+`TrainingOverrides` dictionary as `options` to configure a new run. The return
+path points to the final checkpoint inside the model folder.
 
 ```python
 from nnunet_mlx import ModelFolderPredictor, load_model_bundle
 
 bundle = load_model_bundle("mlx-model", configuration="3d_fullres")
 predictor = ModelFolderPredictor(bundle)
-result = predictor.predict_case(
-    ["case_0000.nii.gz"], "predictions/case", save_probabilities=False, overwrite=False,
-)
+result = predictor.predict_case(["case_0000.nii.gz"], "predictions/case")
 print(result.metrics)  # synchronized timings, tile counts and processed shapes
 ```
 
@@ -298,8 +321,11 @@ For a single-channel 3D class model, two methods skip file I/O:
   and label `properties`. `inputs` is an empty list. With SimpleITK, probability
   geometry needs orthonormal axes and consistent NIfTI qform and sform codes.
 
-`ModelFolderPredictor` accumulates sliding windows in float32, while the runners and the
-CLI accumulate in float16 as nnU-Net does, so their outputs can differ slightly.
+`ModelFolderPredictor` defaults to float32 accumulation. Set
+`accumulation="nnunet-fp16"` to match the CLI and MedMLX runners.
+`ModelBundle` and `NnUNetModel` describe the loaded models. `PlainConvUNetSpec` and
+`ResidualEncoderUNetSpec` describe their topology. Invalid input and unsupported
+models raise `ContractError` in the native API.
 
 Output files, error types, accumulation and the `.pkl` loader are described in the
 [technical notes](https://github.com/MedMLX/nnunet-mlx/blob/main/docs/technical.md).

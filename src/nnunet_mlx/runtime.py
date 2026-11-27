@@ -5,19 +5,18 @@ from __future__ import annotations
 import importlib.metadata
 import platform
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
-from medmlx_core.typing import ArrayConstructor, MlxRuntime, NeuralRuntime, Tree, UtilsRuntime
+from medmlx_core.typing import MlxRuntime, NeuralRuntime, Tree, UtilsRuntime
 
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 from nnunet_mlx.prediction.source import SMILE_SOURCE_PROFILE
 
 if TYPE_CHECKING:
-    from mlx.core import Dtype, array
     from mlx.nn import (
         AvgPool2d,
         AvgPool3d,
@@ -41,36 +40,6 @@ class LayerRuntime(NeuralRuntime, Protocol):
     AvgPool3d: type[AvgPool3d]
 
 MLX_VERSION = "0.32.5"
-
-
-class InferenceRuntime(Protocol):
-    """Declare the MLX operations used by sliding-window prediction."""
-
-    @property
-    def array(self) -> ArrayConstructor:
-        """Return the MLX array constructor used by inference."""
-        ...
-
-    @property
-    def float32(self) -> Dtype:
-        """Return the MLX float32 dtype."""
-        ...
-
-    def eval(self, *args: object) -> None:
-        """Evaluate the supplied lazy MLX values."""
-        ...
-
-    def async_eval(self, *args: object) -> None:
-        """Schedule evaluation of the supplied lazy MLX values without waiting."""
-        ...
-
-    def contiguous(self, value: array) -> array:
-        """Return a contiguous MLX array."""
-        ...
-
-    def flip(self, value: array, *, axis: Sequence[int]) -> array:
-        """Reverse the requested array axes."""
-        ...
 
 
 class CompilableModel[I, O](Protocol):

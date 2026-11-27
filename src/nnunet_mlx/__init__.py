@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
     from nnunet_mlx.storage.conversion import read_conversion_manifest
     from nnunet_mlx.storage.upstream import convert_trained_model
+    from nnunet_mlx.training.data import PreparedDataset, prepare_training_data
+    from nnunet_mlx.training.runner import TrainingOverrides, train_model
 
     __version__: str
 
@@ -30,12 +32,16 @@ __all__ = [
     "NiftiPrediction",
     "NnUNetModel",
     "PlainConvUNetSpec",
+    "PreparedDataset",
     "ResidualEncoderUNetSpec",
+    "TrainingOverrides",
     "convert_trained_model",
     "load_model",
     "load_model_bundle",
+    "prepare_training_data",
     "read_conversion_manifest",
     "run",
+    "train_model",
 ]
 
 # Execution entry points load on first access so importing the package, the
@@ -51,6 +57,10 @@ _DEFERRED_EXPORTS = {
     "load_model_bundle": "nnunet_mlx.model.folder",
     "read_conversion_manifest": "nnunet_mlx.storage.conversion",
     "convert_trained_model": "nnunet_mlx.storage.upstream",
+    "PreparedDataset": "nnunet_mlx.training.data",
+    "prepare_training_data": "nnunet_mlx.training.data",
+    "TrainingOverrides": "nnunet_mlx.training.runner",
+    "train_model": "nnunet_mlx.training.runner",
 }
 
 

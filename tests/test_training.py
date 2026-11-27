@@ -15,6 +15,7 @@ from nnunet_reference.arrays import host_array
 
 from nnunet_mlx.cli import main
 from nnunet_mlx.contracts import parse_mapping, parse_number, parse_sequence
+from nnunet_mlx.errors import ContractError
 from nnunet_mlx.plans import read_json_object
 from nnunet_mlx.runtime import import_mlx
 from nnunet_mlx.training.data import PreparedDataset
@@ -30,7 +31,7 @@ def test_scheduled_training_resumes_and_keeps_best_validation_checkpoint(tmp_pat
     raw = tmp_path / "dataset"
     _write_dataset(raw)
     prepared, resumed = (tmp_path / name for name in ("prepared", "resumed"))
-    assert main(["prepare-training", str(raw), str(prepared), "--patch-size", "16x16x16"]) == 0
+    assert main(["prepare-training", str(raw), str(prepared), "--patch-size", "32x32x32"]) == 0
     settings: TrainingOverrides = {
         "steps_per_epoch": 8,
         "validate_every": 1,
@@ -39,9 +40,12 @@ def test_scheduled_training_resumes_and_keeps_best_validation_checkpoint(tmp_pat
         "focus_label": 1,
         "spatial_augment": True,
         "recompute_stages": 1,
+        "deep_supervision": True,
     }
 
     def interrupt(_: object) -> None:
+        with pytest.raises(ContractError, match="a training process is already using"):
+            train_model(prepared, resumed, resume=True)
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
@@ -136,6 +140,73 @@ def test_native_training_resume_and_nifti_prediction(tmp_path: Path) -> None:
     truth = np.asarray(expected.dataobj, dtype=np.uint8) == 1
     assert mask.shape == truth.shape
     assert 2 * np.count_nonzero(mask & truth) / (mask.sum() + truth.sum()) > 0.8
+
+
+@pytest.mark.metal
+def test_warm_start_checks_source_labels_and_topology(tmp_path: Path) -> None:
+    from nnunet_mlx import TrainingOverrides, prepare_training_data, train_model
+
+    raw, original = tmp_path / "raw", tmp_path / "original"
+    _write_dataset(raw)
+    prepared = prepare_training_data(str(raw), str(tmp_path / "prepared"), patch_size=(16, 16, 16))
+    options: TrainingOverrides = {"steps_per_epoch": 1, "cosine_lr": True}
+    checkpoint = train_model(prepared, original, epochs=1, options=options)
+    mx, _ = import_mlx()
+    source_weights = checkpoint / "weights.safetensors"
+    weights = mx.load(source_weights, format="safetensors")
+    half = tmp_path / "half.safetensors"
+    mx.save_safetensors(half, {key: array.astype(mx.float16) for key, array in weights.items()})
+    half.replace(source_weights)
+
+    warm = tmp_path / "warm"
+    train_model(prepared, warm, epochs=1, options=options, initialize_from=checkpoint)
+    train_model(str(prepared.folder), str(warm), epochs=2, resume=True)
+    arrays = mx.load(warm / "fold_0/training.safetensors", format="safetensors")
+    assert arrays["optimizer.step"].item() == 2
+    assert arrays["optimizer.learning_rate"].item() == pytest.approx(5e-5)
+
+    dataset_path = original / "dataset.json"
+    dataset = read_json_object(dataset_path)
+    changed = dataset | {"labels": {"background": 0, "other structure": 1}}
+    dataset_path.write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(ContractError, match="labels do not match"):
+        train_model(prepared, tmp_path / "bad-labels", epochs=1, initialize_from=checkpoint)
+    dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+
+    plans_path = original / "plans.json"
+    plans = read_json_object(plans_path)
+    configs = parse_mapping(plans["configurations"], name="configurations")
+    config = parse_mapping(configs["3d_fullres"], name="configuration")
+    arch = parse_mapping(config["architecture"], name="architecture")
+    kwargs = parse_mapping(arch["arch_kwargs"], name="architecture keyword arguments")
+    kwargs["nonlin_kwargs"] = {"negative_slope": 0.2}
+    arch["arch_kwargs"] = kwargs
+    config["architecture"] = arch
+    configs["3d_fullres"] = config
+    plans["configurations"] = configs
+    plans_path.write_text(json.dumps(plans), encoding="utf-8")
+    with pytest.raises(ContractError, match="topology does not match"):
+        train_model(prepared, tmp_path / "bad-topology", epochs=1, initialize_from=checkpoint)
+
+
+@pytest.mark.metal
+def test_dice_respects_patch_grouping() -> None:
+    from nnunet_mlx.data.labels import parse_dataset_label_semantics
+    from nnunet_mlx.training.step import segmentation_loss
+
+    mx, _ = import_mlx()
+    semantics = parse_dataset_label_semantics({"labels": {"background": 0, "target": 1}})
+    logits = mx.log(mx.array([[[[0.9, 0.1], [0.5, 0.5]]], [[[0.6, 0.4], [0.8, 0.2]]]]))
+    labels = mx.array([[[0, 1]], [[1, 1]]])
+    ce = -math.log(0.9 * 0.5 * 0.4 * 0.2) / 4
+    pooled = 1 - 2.2 / 4.2
+    per_patch = 1 - (1.0 / 1.6 + 1.2 / 2.6) / 2
+    assert segmentation_loss(semantics, batch_dice=True)(logits, labels).item() == pytest.approx(
+        ce + pooled
+    )
+    assert segmentation_loss(semantics, batch_dice=False)(logits, labels).item() == pytest.approx(
+        ce + per_patch
+    )
 
 
 @pytest.mark.metal

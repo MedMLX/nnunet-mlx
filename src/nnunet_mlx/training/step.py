@@ -27,10 +27,12 @@ type Loss = Callable[[mx.array, mx.array], mx.array]
 _mx, _ = import_mlx()
 
 
-def segmentation_loss(semantics: LabelSemantics, *, balanced_ce: bool = False) -> Loss:
+def segmentation_loss(
+    semantics: LabelSemantics, *, balanced_ce: bool = False, batch_dice: bool = True,
+) -> Loss:
     """Create Dice plus cross-entropy, with -1 masking padded and ignored targets."""
     if not semantics.has_regions:
-        return partial(_class_loss, balanced_ce=balanced_ce)
+        return partial(_class_loss, balanced_ce=balanced_ce, batch_dice=batch_dice)
     if balanced_ce:
         raise ContractError("balanced cross-entropy requires mutually exclusive class targets")
     membership = mx.array(
@@ -40,63 +42,84 @@ def segmentation_loss(semantics: LabelSemantics, *, balanced_ce: bool = False) -
     _mx.eval(membership)
 
     def loss(logits: mx.array, labels: mx.array) -> mx.array:
-        return _region_loss(logits, labels, membership)
+        return _region_loss(logits, labels, membership, batch_dice=batch_dice)
 
     return loss
 
 
-def _class_loss(logits: mx.array, labels: mx.array, *, balanced_ce: bool) -> mx.array:
+def _class_loss(
+    logits: mx.array, labels: mx.array, *, balanced_ce: bool, batch_dice: bool,
+) -> mx.array:
     """Gather class targets and reduce small per-tile histograms without one-hot labels."""
     classes = logits.shape[-1]
-    scores = mx.reshape(logits, (-1, classes)).astype(mx.float32)
-    targets = mx.reshape(labels, (-1,))
+    groups = 1 if batch_dice else logits.shape[0]
+    scores = mx.reshape(logits, (groups, -1, classes)).astype(mx.float32)
+    targets = mx.reshape(labels, (groups, -1))
     valid = targets >= 0
     indices = mx.maximum(targets, 0)
     log_probs = scores - mx.logsumexp(scores, axis=-1, keepdims=True)
-    true_log_probs = mx.reshape(mx.take_along_axis(log_probs, indices[:, None], axis=-1), (-1,))
+    true_log_probs = mx.take_along_axis(log_probs, indices[..., None], axis=-1)[..., 0]
     negative_log_likelihood = -mx.where(valid, true_log_probs, 0.0)
-    predicted = mx.sum(mx.where(valid[:, None], mx.exp(log_probs), 0.0), axis=0)
+    predicted = mx.sum(mx.where(valid[..., None], mx.exp(log_probs), 0.0), axis=1)
 
-    # Independent tiles bound the contention of repeated labels in scatter-add.
+    # Tiles bound scatter-add contention without pooling across Dice groups.
     tile = 64
-    tiles = (targets.size + tile - 1) // tile
-    bins = (mx.arange(targets.size, dtype=mx.int32) // tile) * classes + indices
-    empty = mx.zeros((tiles * classes,), mx.float32)
+    voxels = targets.shape[1]
+    tiles = (voxels + tile - 1) // tile
+    offsets = mx.arange(groups, dtype=mx.int32)[:, None] * tiles
+    bins = (offsets + mx.arange(voxels, dtype=mx.int32) // tile) * classes + indices
+    empty = mx.zeros((groups * tiles * classes,), mx.float32)
     true_prob = mx.where(valid, mx.exp(true_log_probs), 0.0)
     scatter = cast(IndexedUpdates, empty.at)[bins]
-    inter = mx.sum(mx.reshape(scatter.add(true_prob), (tiles, classes)), axis=0)
-    actual = mx.sum(mx.reshape(scatter.add(valid.astype(mx.float32)), (tiles, classes)), axis=0)
+    inter = mx.sum(mx.reshape(scatter.add(true_prob), (groups, tiles, classes)), axis=1)
+    actual = mx.sum(
+        mx.reshape(scatter.add(valid.astype(mx.float32)), (groups, tiles, classes)), axis=1,
+    )
     if balanced_ce:
         # Inverse-square-root weighting tempers the contribution of tiny classes.
-        weights = mx.rsqrt(mx.maximum(actual, 1))
+        counts = mx.sum(actual, axis=0)
+        weights = mx.rsqrt(mx.maximum(counts, 1))
         ce = mx.sum(negative_log_likelihood * weights[indices]) / mx.maximum(
-            mx.sum(weights * actual),
+            mx.sum(weights * counts),
             1.0,
         )
     else:
         ce = mx.sum(negative_log_likelihood) / mx.maximum(mx.sum(valid), 1)
-    return ce + _dice_loss(inter[1:], predicted[1:], actual[1:])
+    return ce + _dice_loss(inter[..., 1:], predicted[..., 1:], actual[..., 1:])
 
 
-def _region_loss(logits: mx.array, labels: mx.array, membership: mx.array) -> mx.array:
+def _region_loss(
+    logits: mx.array, labels: mx.array, membership: mx.array, *, batch_dice: bool,
+) -> mx.array:
     """Use independent sigmoid outputs for overlapping regions."""
-    scores = mx.reshape(logits, (-1, logits.shape[-1])).astype(mx.float32)
-    targets = mx.reshape(labels, (-1,))
-    valid = (targets >= 0)[:, None]
+    groups = 1 if batch_dice else logits.shape[0]
+    scores = mx.reshape(logits, (groups, -1, logits.shape[-1])).astype(mx.float32)
+    targets = mx.reshape(labels, (groups, -1))
+    valid = (targets >= 0)[..., None]
     positive = membership[mx.maximum(targets, 0)]
     cost = mx.logaddexp(mx.where(positive, -scores, scores), 0.0)
     ce = mx.sum(mx.where(valid, cost, 0.0)) / mx.maximum(mx.sum(valid) * scores.shape[-1], 1)
     probabilities = mx.where(valid, mx.sigmoid(scores), 0.0)
     truth = positive & valid
-    inter = mx.sum(mx.where(truth, probabilities, 0.0), axis=0)
-    return ce + _dice_loss(inter, mx.sum(probabilities, axis=0), mx.sum(truth, axis=0))
+    inter = mx.sum(mx.where(truth, probabilities, 0.0), axis=1)
+    return ce + _dice_loss(inter, mx.sum(probabilities, axis=1), mx.sum(truth, axis=1))
 
 
 def _dice_loss(intersection: mx.array, predicted: mx.array, actual: mx.array) -> mx.array:
-    """Average soft Dice loss over foreground labels represented in the batch."""
+    """Average soft Dice loss over foreground labels present in each reduction group."""
     present = actual > 0
     dice = 2.0 * intersection / mx.maximum(predicted + actual, 1e-5)
     return mx.sum(mx.where(present, 1.0 - dice, 0.0)) / mx.maximum(mx.sum(present), 1)
+
+
+def _downsample_targets(labels: mx.array, shape: tuple[int, ...]) -> mx.array:
+    """Sample voxel centers with nearest-exact indexing, preserving ignored labels."""
+    sampled = labels
+    for axis, (source, target) in enumerate(zip(labels.shape[1:], shape, strict=True), start=1):
+        if source != target:
+            indices = ((2 * mx.arange(target, dtype=mx.int32) + 1) * source) // (2 * target)
+            sampled = mx.take(sampled, indices, axis=axis)
+    return sampled
 
 
 class TrainingStep:
@@ -111,20 +134,35 @@ class TrainingStep:
         precision: Precision,
         compile_step: bool,
         balanced_ce: bool = False,
+        batch_dice: bool = True,
+        deep_supervision: bool = False,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
-        loss = segmentation_loss(semantics, balanced_ce=balanced_ce)
+        loss = segmentation_loss(semantics, balanced_ce=balanced_ce, batch_dice=batch_dice)
+
+        def forward_loss(images: mx.array, labels: mx.array) -> mx.array:
+            if not deep_supervision:
+                return loss(model(images), labels)
+            finest, *auxiliary = model.forward_supervised(images)
+            value = loss(finest, labels)
+            total_weight = 1.0
+            for index, logits in enumerate(auxiliary, start=1):
+                weight = 0.5**index
+                target = _downsample_targets(labels, logits.shape[1:-1])
+                value = value + weight * loss(logits, target)
+                total_weight += weight
+            return value / total_weight
 
         def objective(images: mx.array, labels: mx.array) -> mx.array:
             if precision == "float32":
-                return loss(model(images), labels)
+                return forward_loss(images, labels)
             # Cast inside autodiff so the persistent parameters and AdamW moments stay FP32.
             master = model.trainable_parameters()
             compute = cast("Parameters", tree_map(lambda value: value.astype(mx.bfloat16), master))
             model.update(compute)
             try:
-                return loss(model(images.astype(mx.bfloat16)), labels)
+                return forward_loss(images.astype(mx.bfloat16), labels)
             finally:
                 model.update(master)
 

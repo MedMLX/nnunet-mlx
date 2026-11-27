@@ -12,7 +12,7 @@ from medmlx_core.weights import model_folder
 from nnunet_mlx import medmlx
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.medmlx_types import RunResult
-from nnunet_mlx.named_models import READINESS, segment_folder
+from nnunet_mlx.named_models import READINESS
 from nnunet_mlx.prediction.source import SIAM_SOURCE_PROFILE
 
 MODEL = {
@@ -100,8 +100,9 @@ def run(
     ras = orientations.axcodes2ornt("RAS")
     if voxel_size is None and np.array_equal(ornt, ras):
         # Upstream predicts RAS inputs directly, without rewriting them.
-        return segment_folder(
-            folder, [source_path], output_dir, "3d_fullres", folds, overwrite=overwrite,
+        return medmlx.segment_case(
+            weights_path=folder, image_paths=[source_path], output_dir=output_dir,
+            folds=folds, overwrite=overwrite,
             grid_of="image_path", source_profile=SIAM_SOURCE_PROFILE, use_mirroring=False,
         )
     # torchio.ToCanonical, used upstream, is this nibabel reorientation: voxels are
@@ -117,8 +118,9 @@ def run(
         nibabel.save(nibabel.Nifti1Image(
             np.asarray(canonical.get_fdata(), dtype=np.float32), affine,
         ), str(staged_input))
-        result = segment_folder(
-            folder, [staged_input], Path(staging) / "out", "3d_fullres", folds,
+        result = medmlx.segment_case(
+            weights_path=folder, image_paths=[staged_input], output_dir=Path(staging) / "out",
+            folds=folds,
             overwrite=False, grid_of="image_path", source_profile=SIAM_SOURCE_PROFILE,
             use_mirroring=False,
         )

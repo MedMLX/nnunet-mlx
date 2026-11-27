@@ -10,7 +10,7 @@ from medmlx_core.weights import model_folder
 
 from nnunet_mlx import medmlx
 from nnunet_mlx.medmlx_types import RunResult
-from nnunet_mlx.named_models import READINESS, segment_folder
+from nnunet_mlx.named_models import READINESS
 
 MODEL = {
     "id": "nnunet-brats2021", "label": "nnU-Net BraTS 2021", "task": "segmentation",
@@ -54,7 +54,8 @@ def run(
     )
     folder = model_folder("nnunet-brats2021", weights_path)
     folds = list(range(5)) if fold is None else [fold]
-    return segment_folder(
-        folder, images, output_dir, "3d_fullres", folds, overwrite=overwrite,
+    return medmlx.segment_case(
+        weights_path=folder, image_paths=images, output_dir=output_dir,
+        configuration="3d_fullres", folds=folds, overwrite=overwrite,
         grid_of="image_paths", use_mirroring=use_mirroring,
     )

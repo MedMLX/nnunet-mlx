@@ -15,9 +15,7 @@ from nnunet_mlx.errors import ContractError
 from nnunet_mlx.storage.imageio import (
     image_reader_output_sidecar,
     read_images,
-    read_sitk_images,
     write_segmentation,
-    write_sitk_segmentation,
 )
 
 
@@ -99,9 +97,10 @@ def test_simpleitk_compound_reader_matches_oracle_and_exports_spatial_geometry(
     ).SimpleITKIO()
 
     expected, expected_properties = source_reader.read_images((str(source),))
-    actual, properties = read_sitk_images((source,))
+    actual, properties = read_images("SimpleITKIO", (source,))
     output = tmp_path / "prediction.nii.gz"
-    write_sitk_segmentation(
+    write_segmentation(
+        "SimpleITKIO",
         np.asarray(raw[0] > 30, dtype=np.uint16),
         output,
         properties,

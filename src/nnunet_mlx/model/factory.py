@@ -38,28 +38,43 @@ def build_model_from_plans(
         ContractError: If the architecture class is neither ``PlainConvUNet`` nor
             ``ResidualEncoderUNet``, or its options are unsupported.
     """
+    spec = network_spec_from_plans(
+        plans,
+        configuration=configuration,
+        input_channels=input_channels,
+        output_channels=output_channels,
+    )
+    from nnunet_mlx.model.network import PlainConvUNet, ResidualEncoderUNet
+
+    if isinstance(spec, PlainConvUNetSpec):
+        return PlainConvUNet(spec)
+    return ResidualEncoderUNet(spec)
+
+
+def network_spec_from_plans(
+    plans: Mapping[str, object],
+    *,
+    configuration: str,
+    input_channels: int,
+    output_channels: int,
+) -> PlainConvUNetSpec | ResidualEncoderUNetSpec:
+    """Resolve the network topology without allocating model weights."""
     configurations = _mapping(plans.get("configurations"), name="configurations")
     config = _mapping(configurations.get(configuration), name=configuration)
     architecture = _mapping(config.get("architecture"), name="architecture")
     class_name = _string(architecture.get("network_class_name"), name="network_class_name")
     if class_name.endswith("PlainConvUNet"):
-        spec = PlainConvUNetSpec.from_plans(
+        return PlainConvUNetSpec.from_plans(
             plans,
             configuration=configuration,
             input_channels=input_channels,
             num_classes=output_channels,
         )
-        from nnunet_mlx.model.network import PlainConvUNet
-
-        return PlainConvUNet(spec)
     if class_name.endswith("ResidualEncoderUNet"):
-        residual_spec = ResidualEncoderUNetSpec.from_plans(
+        return ResidualEncoderUNetSpec.from_plans(
             plans,
             configuration=configuration,
             input_channels=input_channels,
             num_classes=output_channels,
         )
-        from nnunet_mlx.model.network import ResidualEncoderUNet
-
-        return ResidualEncoderUNet(residual_spec)
     raise ContractError(f"unsupported nnU-Net architecture {class_name!r}")

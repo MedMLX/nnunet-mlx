@@ -9,8 +9,8 @@ from typing import Annotated
 import typer
 
 from nnunet_mlx.commands.parsing import parse_selected_folds
+from nnunet_mlx.commands.prediction import echo_folder_result, load_cli_predictor
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
 
 
 def convert_command(
@@ -143,22 +143,17 @@ def predict_command(
     folds = parse_selected_folds(fold_values)
     converted = cached_conversion(trained, folds=folds, checkpoint_name=checkpoint_name)
 
-    from dataclasses import replace
-
-    from nnunet_mlx.medmlx import predictor
-    from nnunet_mlx.model.folder import load_model_bundle
     from nnunet_mlx.storage.conversion import read_conversion_manifest
 
     # The checkpoints record their configuration; -m runs need no -c.
     manifest = read_conversion_manifest(converted)
-    bundle = load_model_bundle(
+    predictor = load_cli_predictor(
         converted, configuration=manifest["configuration"],
         folds=tuple(entry["fold"] for entry in manifest["folds"]) if folds is None else folds,
-        source_profile=DEFAULT_INFERENCE_SOURCE_PROFILE,
+        step_fraction=step_size,
+        disable_mirroring=disable_tta,
     )
-    if disable_tta:
-        bundle = replace(bundle, mirroring_axes=())
-    result = predictor(bundle, step_fraction=step_size).predict_folder(
+    result = predictor.predict_folder(
         input_folder,
         output_folder,
         previous_stage_folder=previous_stage,
@@ -171,8 +166,4 @@ def predict_command(
         export_processes=export_processes,
         max_inflight_bytes=max_inflight_bytes,
     )
-    if json_output:
-        typer.echo(json.dumps(result.to_payload(), sort_keys=True))
-        return
-    typer.echo(f"predicted: {len(result.predictions)}")
-    typer.echo(f"skipped: {len(result.skipped)}")
+    echo_folder_result(result, json_output=json_output)

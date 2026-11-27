@@ -11,9 +11,9 @@ from typing import cast
 import numpy as np
 
 from nnunet_mlx.contracts import parse_number, parse_sequence
+from nnunet_mlx.data.cases import RawInputCase
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.plans import PlansContract
-from nnunet_mlx.prediction.pipeline import RawInputCase
 from nnunet_mlx.storage.imageio import read_images, resolve_image_reader
 
 _DEFAULT_READERS = {
@@ -33,7 +33,9 @@ def select_reader(file_ending: str, override: object) -> str:
     """Select an existing reader from the dataset override or file extension."""
     if override is not None and not isinstance(override, str):
         raise ContractError("overwrite_image_reader_writer must be a reader name")
-    reader = override or _DEFAULT_READERS.get(file_ending)
+    reader = override if override and override != "None" else _DEFAULT_READERS.get(
+        file_ending.casefold()
+    )
     if reader is None:
         raise ContractError(f"no image reader for {file_ending!r}")
     return resolve_image_reader(reader, file_ending=file_ending)
@@ -162,7 +164,10 @@ def _image_geometry(path: Path, reader: str) -> tuple[tuple[int, ...], tuple[flo
         shape = cast(tuple[int, ...], header.GetSize())[::-1]
         spacing = cast(tuple[float, ...], header.GetSpacing())[::-1]
         if len(shape) == 2:
-            return (1, *shape), (max(spacing), *spacing)
+            return (1, *shape), (max(spacing) * 999, *spacing)
+        if len(shape) == 4:
+            # The reader exposes the fourth SimpleITK axis as channels in CZYX order.
+            return shape[1:], spacing[1:]
         if len(shape) == 3:
             return shape, spacing
     elif reader == "NibabelIO":

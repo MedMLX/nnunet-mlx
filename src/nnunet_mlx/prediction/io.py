@@ -1,4 +1,4 @@
-"""Host input preparation and prediction restoration/export tasks."""
+"""Host input preparation and prediction source signatures."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from nnunet_mlx.data.labels import LabelSemantics
 from nnunet_mlx.data.preprocessing import labelmap_to_one_hot, preprocess_raw_case
 from nnunet_mlx.errors import ContractError
 from nnunet_mlx.plans import PlansContract
-from nnunet_mlx.prediction.export import ExportedFiles, export_prediction, restore_prediction
 from nnunet_mlx.prediction.sliding_window import InputArray
 from nnunet_mlx.storage.imageio import (
     image_reader_input_sidecars,
@@ -125,39 +124,6 @@ def prepare_prediction_input(
         data=(np.ascontiguousarray(network_input, dtype=np.float32)
               if isinstance(network_input, np.ndarray) else network_input),
         properties=preprocessed.properties,
-    )
-
-
-def restore_and_export_prediction(
-    logits: npt.NDArray[np.generic],
-    properties: Mapping[str, object],
-    output_prefix: str | Path,
-    *,
-    plans: PlansContract,
-    semantics: LabelSemantics,
-    file_ending: str,
-    image_reader_writer: str,
-    save_probabilities: bool,
-    overwrite: bool,
-    completion_identity: Mapping[str, object] | None = None,
-) -> ExportedFiles:
-    """Restore in the inference process, then write the completed prediction."""
-
-    restored = restore_prediction(
-        logits,
-        properties,
-        plans,
-        semantics,
-        return_probabilities=save_probabilities,
-    )
-    return export_prediction(
-        restored,
-        properties,
-        output_prefix,
-        file_ending=file_ending,
-        image_reader_writer=image_reader_writer,
-        overwrite=overwrite,
-        completion_identity=completion_identity,
     )
 
 

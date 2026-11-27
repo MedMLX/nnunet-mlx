@@ -4,33 +4,35 @@ from __future__ import annotations
 
 import fcntl
 from collections.abc import Callable, Mapping
-from contextlib import closing
-from dataclasses import asdict, dataclass
+from contextlib import ExitStack, closing
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from statistics import fmean
 from time import perf_counter
-from typing import Literal, TypedDict
-
-from mlx import core as mx
-from mlx.optimizers import AdamW, cosine_decay, join_schedules, linear_schedule
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from nnunet_mlx.contracts import parse_boolean, parse_integer, parse_mapping, parse_number
+from nnunet_mlx.data.labels import parse_dataset_label_semantics
 from nnunet_mlx.errors import ContractError
-from nnunet_mlx.model.factory import build_model_from_plans
-from nnunet_mlx.model.network import Network, configure_training_forward
-from nnunet_mlx.plans import read_json_object
+from nnunet_mlx.model.factory import build_model_from_plans, network_spec_from_plans
+from nnunet_mlx.model.metadata import model_input_channel_count
+from nnunet_mlx.plans import PlansContract, read_json_object
 from nnunet_mlx.runtime import runtime_info, validate_inference_execution
-from nnunet_mlx.storage.checkpoint import load_inference_checkpoint
-from nnunet_mlx.storage.filesystem import write_new_directory
-from nnunet_mlx.training.checkpoint import (
-    export_checkpoint,
-    load_training_state,
-    save_training_state,
-    write_training_json,
+from nnunet_mlx.storage.checkpoint import (
+    load_inference_checkpoint,
+    read_inference_checkpoint_state,
 )
+from nnunet_mlx.storage.filesystem import write_new_directory
 from nnunet_mlx.training.data import PatchSampler, PreparedDataset
-from nnunet_mlx.training.step import Precision, TrainingStep
-from nnunet_mlx.training.validation import validate_cases
+
+if TYPE_CHECKING:
+    from mlx.optimizers import AdamW
+
+    from nnunet_mlx.model.network import Network
+    from nnunet_mlx.training.checkpoint import History
+    from nnunet_mlx.training.step import TrainingStep
+
+type Precision = Literal["float32", "bfloat16"]
 
 _RUN_SCHEMA = "nnunet-mlx.training-run.v1"
 _CHECKPOINT = "training.safetensors"
@@ -53,6 +55,7 @@ class TrainingOverrides(TypedDict, total=False):
     balanced_ce: bool
     cosine_lr: bool
     compile_step: bool
+    deep_supervision: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +74,7 @@ class TrainingSettings:
     focus_label: int | None
     balanced_ce: bool
     cosine_lr: bool
+    deep_supervision: bool
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> TrainingSettings:
@@ -110,29 +114,48 @@ class TrainingSettings:
             None if focus is None else _positive_int(focus, name="focus_label"),
             parse_boolean(payload.get("balanced_ce", False), name="balanced_ce"),
             parse_boolean(payload.get("cosine_lr", False), name="cosine_lr"),
+            parse_boolean(payload.get("deep_supervision", False), name="deep_supervision"),
         )
 
 
 def train_model(
-    prepared_folder: Path,
-    destination: Path,
+    prepared_folder: PreparedDataset | str | Path,
+    destination: str | Path,
     *,
     epochs: int | None = None,
     options: TrainingOverrides | None = None,
     resume: bool = False,
-    initialize_from: Path | None = None,
+    initialize_from: str | Path | None = None,
     progress: Callable[[Mapping[str, object]], None] | None = None,
 ) -> Path:
-    """Train on Metal and return a checkpoint in the standard prediction folder."""
-    runtime = runtime_info()
-    data = PreparedDataset.load(prepared_folder)
+    """Train on Metal and return the final inference checkpoint directory.
+
+    Pass a prepared dataset or its folder, and a total epoch target that
+    includes completed epochs when resuming.
+    A new run can start from a compatible checkpoint in a model folder.
+    The progress callback receives the metrics after each epoch is committed.
+    """
     overrides = dict(options or {})
-    if resume:
-        if initialize_from is not None:
-            raise ContractError("initialize_from starts a new run")
-        if not (destination / "training.json").is_file():
-            raise ContractError(f"no training run to resume at {destination}")
-    else:
+    if unknown := overrides.keys() - TrainingOverrides.__optional_keys__:
+        raise ContractError(f"unknown training options: {', '.join(sorted(unknown))}")
+    runtime = runtime_info()
+    from nnunet_mlx.training.checkpoint import save_training_state, write_training_json
+
+    data = (
+        prepared_folder
+        if isinstance(prepared_folder, PreparedDataset)
+        else PreparedDataset.load(prepared_folder)
+    )
+    destination = Path(destination)
+    with ExitStack() as run_lock:
+        if resume:
+            if initialize_from is not None:
+                raise ContractError("initialize_from starts a new run")
+            if not (destination / "training.json").is_file():
+                raise ContractError(f"no training run to resume at {destination}")
+            _lock_run(run_lock, destination)
+            return _resume_training(destination, data, epochs, overrides, progress)
+
         if destination.exists():
             raise ContractError(f"training destination exists: {destination}. Use --resume")
         settings = TrainingSettings.from_payload(
@@ -154,11 +177,13 @@ def train_model(
         model, optimizer = _build(
             data,
             settings,
-            initialize_from=initialize_from,
+            initialize_from=None if initialize_from is None else Path(initialize_from),
             schedule_steps=schedule_steps,
         )
 
         def initialize(folder: Path) -> None:
+            # Keep the lock across the rename that exposes the new run to other processes.
+            _lock_run(run_lock, folder)
             fold_folder = folder / f"fold_{data.fold}"
             fold_folder.mkdir()
             write_training_json(folder / "plans.json", data.plans.raw)
@@ -177,13 +202,15 @@ def train_model(
             save_training_state(fold_folder / _CHECKPOINT, model, optimizer, [])
 
         write_new_directory(destination, initialize)
+        return _run_epochs(destination, data, settings, target, model, optimizer, [], progress)
 
-    with (destination / ".training.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise ContractError(f"a training process is already using {destination}") from error
-        return _run_epochs(destination, data, epochs, overrides, progress)
+
+def _lock_run(stack: ExitStack, folder: Path) -> None:
+    lock = stack.enter_context((folder / ".training.lock").open("a"))
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        raise ContractError(f"a training process is already using {folder}") from error
 
 
 def _build(
@@ -193,6 +220,11 @@ def _build(
     initialize_from: Path | None = None,
     schedule_steps: int | None = None,
 ) -> tuple[Network, AdamW]:
+    from mlx import core as mx
+    from mlx.optimizers import AdamW, cosine_decay, join_schedules, linear_schedule
+
+    from nnunet_mlx.model.network import configure_training_forward
+
     config = data.plans.configuration
     if config.previous_stage_name is not None:
         raise ContractError("training requires a single-stage configuration")
@@ -215,15 +247,18 @@ def _build(
         raise ContractError("training requires a network that emits logits at the patch resolution")
     validate_inference_execution(model)
     if initialize_from is not None:
-        load_inference_checkpoint(initialize_from, model=model)
+        _initialize_weights(initialize_from, model, data)
     configure_training_forward(
         model,
         recompute=settings.recompute,
         recompute_stages=settings.recompute_stages,
+        deep_supervision=settings.deep_supervision,
     )
     model.train()
     rate: float | Callable[[mx.array], mx.array] = settings.learning_rate
-    if schedule_steps is not None and schedule_steps > 1:
+    if schedule_steps == 1:
+        rate = cosine_decay(settings.learning_rate, 1, 0.05 * settings.learning_rate)
+    elif schedule_steps is not None:
         warmup = max(1, schedule_steps // 20)
         rate = join_schedules(
             (
@@ -241,20 +276,52 @@ def _build(
     return model, optimizer
 
 
-def _run_epochs(
+def _initialize_weights(checkpoint: Path, model: Network, data: PreparedDataset) -> None:
+    """Require the source plans and output channel semantics for a warm start."""
+    from mlx import core as mx
+
+    checkpoint = checkpoint.resolve()
+    folder = checkpoint.parent.parent
+    source_dataset = read_json_object(folder / "dataset.json")
+    semantics = parse_dataset_label_semantics(source_dataset)
+    if replace(semantics, ignore_label=data.semantics.ignore_label) != data.semantics:
+        raise ContractError("initialization checkpoint labels do not match the prepared dataset")
+    state = read_inference_checkpoint_state(checkpoint)
+    config = state.identity.configuration
+    source_plans = PlansContract.from_payload(
+        read_json_object(folder / "plans.json"), configuration=config
+    )
+    spec = network_spec_from_plans(
+        source_plans.topology_payload(),
+        configuration=config,
+        input_channels=model_input_channel_count(source_dataset, source_plans, semantics),
+        output_channels=semantics.output_channels,
+    )
+    if spec != model.spec or state.spatial_dims != model.spec.spatial_dims:
+        raise ContractError("initialization checkpoint topology does not match the prepared plans")
+    load_inference_checkpoint(checkpoint, model=model)
+    # AdamW initializes its moments from the parameter dtype.
+    model.set_dtype(mx.float32)
+
+
+def _resume_training(
     destination: Path,
     data: PreparedDataset,
     epochs: int | None,
     overrides: Mapping[str, object],
     progress: Callable[[Mapping[str, object]], None] | None,
 ) -> Path:
+    from nnunet_mlx.training.checkpoint import load_training_state, write_training_json
+
     run_path = destination / "training.json"
     run = read_json_object(run_path)
     if run.get("schema") != _RUN_SCHEMA or run.get("prepared_dataset") != data.identifier:
         raise ContractError("resume requires the prepared dataset used to start this run")
+    saved_dataset = read_json_object(destination / "dataset.json")
     if (
         read_json_object(destination / "plans.json") != data.plans.raw
-        or read_json_object(destination / "dataset.json") != data.dataset
+        or saved_dataset != data.dataset
+        or parse_dataset_label_semantics(saved_dataset) != data.semantics
     ):
         raise ContractError("prepared plans or dataset metadata changed since training started")
     saved = parse_mapping(run.get("settings"), name="training settings")
@@ -275,7 +342,27 @@ def _run_epochs(
         raise ContractError(f"this run already completed {len(history)} epochs")
     if target != run["target_epochs"]:
         write_training_json(run_path, run | {"target_epochs": target})
+    return _run_epochs(destination, data, settings, target, model, optimizer, history, progress)
 
+
+def _run_epochs(
+    destination: Path,
+    data: PreparedDataset,
+    settings: TrainingSettings,
+    target: int,
+    model: Network,
+    optimizer: AdamW,
+    history: History,
+    progress: Callable[[Mapping[str, object]], None] | None,
+) -> Path:
+    from nnunet_mlx.training.checkpoint import (
+        export_checkpoint,
+        save_training_state,
+        write_training_json,
+    )
+    from nnunet_mlx.training.step import TrainingStep
+
+    fold = destination / f"fold_{data.fold}"
     def publish(
         epoch: int,
         name: Literal["checkpoint_best", "checkpoint_final"],
@@ -303,6 +390,8 @@ def _run_epochs(
         precision=settings.precision,
         compile_step=settings.compile_step,
         balanced_ce=settings.balanced_ce,
+        batch_dice=data.plans.configuration.batch_dice,
+        deep_supervision=settings.deep_supervision,
     )
     sampler = PatchSampler(
         data,
@@ -354,6 +443,8 @@ def _run_epoch(
         "training_seconds": perf_counter() - start,
     }
     if data.split.val and (epoch % settings.validate_every == 0 or epoch == target):
+        from nnunet_mlx.training.validation import validate_cases
+
         validation = validate_cases(model, data)
         record.update(validation_dice=validation.dice, validation_per_output=validation.per_output)
     return record

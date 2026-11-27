@@ -59,8 +59,7 @@ def image_reader_input_sidecars(
     reader = resolve_image_reader(reader_name)
     if reader != "Tiff3DIO":
         return ()
-    paths = _input_paths(image_files)
-    return () if not paths else (_tiff_image_spacing_path(paths[0]),)
+    return (_tiff_image_spacing_path(_input_paths(image_files)[0]),)
 
 
 def segmentation_reader_input_sidecar(
@@ -87,17 +86,16 @@ def read_images(
     """
 
     reader = resolve_image_reader(reader_name)
-    if reader == "SimpleITKIO":
-        return read_sitk_images(image_files)
-    if reader == "NaturalImage2DIO":
-        data, properties = _read_natural_images(image_files)
-        return cast(npt.NDArray[np.float32], data), properties
     if reader == "Tiff3DIO":
         return _read_tiff_images(image_files)
-    data, properties = _read_nibabel_images(
-        image_files,
-        reorient=reader == "NibabelIOWithReorient",
-    )
+    if reader == "SimpleITKIO":
+        data, properties = _read_sitk_images(image_files, label_data=False)
+    elif reader == "NaturalImage2DIO":
+        data, properties = _read_natural_images(image_files)
+    else:
+        data, properties = _read_nibabel_images(
+            image_files, reorient=reader == "NibabelIOWithReorient",
+        )
     return cast(npt.NDArray[np.float32], data), properties
 
 
@@ -105,7 +103,7 @@ def read_segmentation(
     reader_name: str,
     segmentation_file: str | Path,
     expected_properties: Mapping[str, object],
-) -> HostArray:
+) -> npt.NDArray[np.int32]:
     """Read one non-negative integer label channel and check its case geometry.
 
     Returns contiguous int32 data in ``(1, D, H, W)`` array order. The properties
@@ -123,7 +121,7 @@ def read_segmentation(
 
 def read_exported_segmentation(
     reader_name: str, segmentation_file: str | Path
-) -> tuple[HostArray, dict[str, object]]:
+) -> tuple[npt.NDArray[np.int32], dict[str, object]]:
     """Read a segmentation this package itself exported, with its own geometry.
 
     Unlike :func:`read_segmentation` (which validates a previous-stage
@@ -152,7 +150,7 @@ def _read_label_image(reader: str, path: str | Path) -> tuple[HostArray, dict[st
     )
 
 
-def _validated_labels(data: HostArray, *, name: str) -> HostArray:
+def _validated_labels(data: HostArray, *, name: str) -> npt.NDArray[np.int32]:
     """Require a single channel of finite, nonnegative int32-range integer labels."""
     if (data.shape[0] != 1 or data.dtype.kind not in "biuf"
             or not np.isfinite(data).all() or not np.equal(data, np.rint(data)).all()):
@@ -194,7 +192,7 @@ def write_segmentation(
     if any(path.exists() and not path.is_file() for path in outputs):
         raise ContractError("segmentation output path is not a file")
     if reader == "SimpleITKIO":
-        write_sitk_segmentation(segmentation, target, properties, overwrite=overwrite)
+        _write_sitk_segmentation(segmentation, target, properties)
     elif reader == "NaturalImage2DIO":
         _write_natural_segmentation(segmentation, target)
     elif reader == "Tiff3DIO":
@@ -211,19 +209,6 @@ def write_segmentation(
     return sidecar
 
 
-def read_sitk_images(
-    image_files: Sequence[str | Path],
-) -> tuple[npt.NDArray[np.float32], dict[str, object]]:
-    """Read 2-D, 3-D or 4-D SimpleITK inputs in upstream channel-first layout.
-
-    For 4-D inputs the leading array dimension supplies channels; spatial
-    spacing excludes the fourth image dimension.
-    """
-
-    data, properties = _read_sitk_images(image_files, label_data=False)
-    return cast(npt.NDArray[np.float32], data), properties
-
-
 def _read_sitk_images(
     image_files: Sequence[str | Path], *, label_data: bool,
 ) -> tuple[HostArray, dict[str, object]]:
@@ -236,12 +221,7 @@ def _read_sitk_images(
     direction are kept under ``sitk_stuff`` for export.
     """
 
-    paths = tuple(Path(path) for path in image_files)
-    if not paths:
-        raise ContractError("raw prediction requires at least one image file")
-    missing = [path for path in paths if not path.is_file()]
-    if missing:
-        raise ContractError(f"input image files do not exist: {missing}")
+    paths = _input_paths(image_files)
     sitk = import_module("SimpleITK")
     arrays: list[HostArray] = []
     spacings: list[tuple[float, ...]] = []
@@ -273,7 +253,14 @@ def _read_sitk_images(
         origins.append(origin)
         directions.append(direction)
         nnunet_spacings.append(cast(tuple[float, float, float], nnunet_spacing))
-    _require_same(arrays, spacings, origins, directions, nnunet_spacings)
+    _require_same_shapes(arrays)
+    for name, values in (
+        ("spacing", spacings),
+        ("origin", origins),
+        ("direction", directions),
+        ("nnU-Net spacing", nnunet_spacings),
+    ):
+        _require_same_values(values, name=name)
     data = np.vstack(arrays) if label_data else _stack_finite(arrays)
     properties: dict[str, object] = {
         "sitk_stuff": {
@@ -286,23 +273,16 @@ def _read_sitk_images(
     return data, properties
 
 
-def write_sitk_segmentation(
+def _write_sitk_segmentation(
     segmentation: HostArray,
-    output_file: str | Path,
+    target: Path,
     properties: Mapping[str, object],
-    *,
-    overwrite: bool,
 ) -> None:
     """Write a label volume with the geometry stored in ``properties["sitk_stuff"]``.
 
-    ``segmentation`` is ``(Z, Y, X)``; 2-D geometry requires Z == 1. Existing
-    targets raise unless ``overwrite`` is set. Output is compressed.
+    ``segmentation`` is ``(Z, Y, X)``. Two-dimensional geometry requires Z == 1.
+    Output is compressed.
     """
-    target = Path(output_file)
-    if target.exists() and not overwrite:
-        raise ContractError(f"segmentation output already exists: {target}")
-    if target.exists() and not target.is_file():
-        raise ContractError(f"segmentation output is not a file: {target}")
     labels = _output_labels(segmentation)
     spacing, origin, direction = _sitk_spatial_geometry(properties)
     dimensions = len(spacing)
@@ -681,27 +661,6 @@ def _three_positive_floats(
     if len(values) != 3:
         raise ContractError(f"{name} must contain three values")
     return values[0], values[1], values[2]
-
-
-def _require_same(
-    arrays: Sequence[HostArray],
-    spacings: Sequence[tuple[float, ...]],
-    origins: Sequence[tuple[float, ...]],
-    directions: Sequence[tuple[float, ...]],
-    nnunet_spacings: Sequence[tuple[float, float, float]],
-) -> None:
-    """Require matching modality shapes, spacing, origins and directions."""
-    shapes = [array.shape for array in arrays]
-    if any(shape != shapes[0] for shape in shapes[1:]):
-        raise ContractError(f"input modalities have different shapes: {shapes}")
-    for name, values in (
-        ("spacing", spacings),
-        ("origin", origins),
-        ("direction", directions),
-        ("nnU-Net spacing", nnunet_spacings),
-    ):
-        if any(not np.allclose(values[0], value) for value in values[1:]):
-            raise ContractError(f"input modalities have different {name}")
 
 
 def _require_matching_properties(

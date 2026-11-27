@@ -10,7 +10,6 @@ from nnunet_mlx.model.topology import PlainConvUNetSpec, ResidualEncoderUNetSpec
 if TYPE_CHECKING:
     from mlx.core import array
 
-type NetworkOutput = array | list[array]
 type PredictionModel = Callable[[array], object]
 
 
@@ -27,6 +26,6 @@ class InferenceModel(Protocol):
         """Report whether the model is in training mode."""
         ...
 
-    def __call__(self, values: array, /) -> NetworkOutput:
+    def __call__(self, values: array, /) -> array:
         """Run the model on its input array."""
         ...

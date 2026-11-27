@@ -196,33 +196,6 @@ def assess_fused_class_restore(
     return FusedRestoreSupport(True)
 
 
-def can_use_fused_class_restore(
-    logits: HostArray,
-    new_shape: Sequence[int],
-    current_spacing: Sequence[float],
-    new_spacing: Sequence[float],
-    contract: ResamplingContract,
-) -> FusedRestoreSupport:
-    """Return semantic support plus the measured automatic-selection threshold."""
-
-    support = assess_fused_class_restore(
-        logits,
-        new_shape,
-        current_spacing,
-        new_spacing,
-        contract,
-    )
-    if not support.eligible:
-        return support
-    values = np.asarray(logits)
-    target_voxels = math.prod(_target_shape(new_shape))
-    if int(values.shape[0]) * target_voxels < MINIMUM_FUSED_CLASS_VOXELS:
-        return FusedRestoreSupport(
-            False, "fused restoration is below the qualified performance threshold"
-        )
-    return support
-
-
 def resample_class_logits_argmax_optimized(
     logits: HostArray,
     new_shape: Sequence[int],
@@ -236,29 +209,32 @@ def resample_class_logits_argmax_optimized(
     its class-count and work thresholds are met; other cases use the streaming path.
     """
 
-    support = can_use_fused_class_restore(
-        logits,
-        new_shape,
+    values = np.asarray(logits)
+    target_shape = _target_shape(new_shape)
+    support = assess_fused_class_restore(
+        values,
+        target_shape,
         current_spacing,
         new_spacing,
         contract,
     )
-    if support.eligible:
-        return _run_metal_kernel(np.asarray(logits), _target_shape(new_shape))
+    if (
+        support.eligible
+        and int(values.shape[0]) * math.prod(target_shape) >= MINIMUM_FUSED_CLASS_VOXELS
+    ):
+        return _run_metal_kernel(values, target_shape)
     # The fused and plane-streaming kernels reproduce the spline resampler's
     # coordinates. Torch-style plans require their own host interpolation grid.
     if contract.function_name == "resample_torch_fornnunet":
         return resample_class_logits_argmax(
             logits, new_shape, current_spacing, new_spacing, contract,
         )
-    values = np.asarray(logits)
     separate_z, separate_axis = separate_z_axis(
         validate_spacing(current_spacing, name="current spacing"),
         validate_spacing(new_spacing, name="new spacing"),
         force=contract.force_separate_z,
             threshold=contract.separate_z_anisotropy_threshold,
     )
-    target_shape = _target_shape(new_shape)
     parallel_work = (
         0
         if separate_axis is None

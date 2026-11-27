@@ -14,9 +14,47 @@ from nnunet_mlx.commands.parsing import parse_selected_folds
 from nnunet_mlx.prediction.source import DEFAULT_INFERENCE_SOURCE_PROFILE
 
 if TYPE_CHECKING:
-    from nnunet_mlx.model.folder import ModelBundle
+    from nnunet_mlx.prediction.pipeline import FolderPredictionResult, ModelFolderPredictor
 
 app = typer.Typer(help="Run MLX-native nnU-Net model folders.", no_args_is_help=True)
+
+_FoldOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--fold",
+        help="Fold number or 'all' for fold_all; repeat for an ensemble. "
+        "Omit to detect numeric folds.",
+    ),
+]
+_CheckpointOption = Annotated[
+    str, typer.Option("--checkpoint", help="MLX checkpoint directory name.")
+]
+_SourceProfileOption = Annotated[
+    str, typer.Option("--source-profile", help="Explicit source-bound model identity profile.")
+]
+_PrecisionOption = Annotated[
+    str,
+    typer.Option(
+        "--precision",
+        help="fast-fp32, or source-fp32: MLX on Metal in the pinned Torch rounding order.",
+    ),
+]
+_SaveProbabilitiesOption = Annotated[
+    bool, typer.Option("--save-probabilities", help="Write .npz and .pkl sidecars.")
+]
+_StepFractionOption = Annotated[
+    float,
+    typer.Option(
+        "--step-fraction", min=0, max=1,
+        help="Sliding-window step fraction. Zero is rejected during prediction.",
+    ),
+]
+_DisableMirroringOption = Annotated[
+    bool,
+    typer.Option(
+        "--disable-mirroring", help="Skip the checkpoint's mirroring test-time augmentation."
+    ),
+]
 
 
 @app.command("predict")
@@ -64,77 +102,41 @@ def model_predict_command(
     configuration: Annotated[
         str, typer.Option("--configuration", help="Plans configuration name.")
     ] = "3d_fullres",
-    folds: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--fold",
-            help="Fold number or 'all' for fold_all; repeat for an ensemble. "
-            "Omit to detect numeric folds.",
-        ),
-    ] = None,
-    checkpoint_name: Annotated[
-        str, typer.Option("--checkpoint", help="MLX checkpoint directory name.")
-    ] = "checkpoint_final",
-    source_profile: Annotated[
-        str,
-        typer.Option(
-            "--source-profile",
-            help="Explicit source-bound model identity profile.",
-        ),
-    ] = DEFAULT_INFERENCE_SOURCE_PROFILE,
-    precision: Annotated[
-        str,
-        typer.Option(
-            "--precision",
-            help="fast-fp32, or source-fp32: MLX on Metal in the pinned Torch rounding order.",
-        ),
-    ] = "fast-fp32",
-    save_probabilities: Annotated[
-        bool, typer.Option("--save-probabilities", help="Write .npz and .pkl sidecars.")
-    ] = False,
+    folds: _FoldOption = None,
+    checkpoint_name: _CheckpointOption = "checkpoint_final",
+    source_profile: _SourceProfileOption = DEFAULT_INFERENCE_SOURCE_PROFILE,
+    precision: _PrecisionOption = "fast-fp32",
+    save_probabilities: _SaveProbabilitiesOption = False,
     overwrite: Annotated[
         bool, typer.Option("--overwrite", help="Replace existing prediction outputs.")
     ] = False,
-    step_fraction: Annotated[
-        float,
-        typer.Option(
-            "--step-fraction", min=0, max=1,
-            help="Sliding-window step fraction. Zero is rejected during prediction.",
-        ),
-    ] = 0.5,
-    disable_mirroring: Annotated[
-        bool,
-        typer.Option(
-            "--disable-mirroring", help="Skip the checkpoint's mirroring test-time augmentation."
-        ),
-    ] = False,
+    step_fraction: _StepFractionOption = 0.5,
+    disable_mirroring: _DisableMirroringOption = False,
     json_output: Annotated[
         bool, typer.Option("--json", help="Emit stable JSON on stdout.")
     ] = False,
 ) -> None:
     """Predict one raw case from a validated MLX model folder, as the MedMLX runner does."""
 
-    bundle = _load_selected_model_bundle(
+    predictor = load_cli_predictor(
         model_folder,
         configuration=configuration,
-        folds=folds,
+        folds=parse_selected_folds(folds),
         checkpoint_name=checkpoint_name,
         source_profile=source_profile,
         precision=precision,
+        step_fraction=step_fraction,
         disable_mirroring=disable_mirroring,
     )
-    from nnunet_mlx.medmlx import predictor
-
-    result = predictor(bundle, step_fraction=step_fraction).predict_case(
+    result = predictor.predict_case(
         image_files,
         output_prefix,
         previous_stage_file=previous_stage_file,
         save_probabilities=save_probabilities,
         overwrite=overwrite,
     )
-    payload = result.to_payload()
     if json_output:
-        typer.echo(json.dumps(payload, sort_keys=True))
+        typer.echo(json.dumps(result.to_payload(), sort_keys=True))
         return
     typer.echo(f"segmentation: {result.files.segmentation}")
 
@@ -173,34 +175,11 @@ def model_predict_folder_command(
         ),
     ] = None,
     configuration: Annotated[str, typer.Option("--configuration")] = "3d_fullres",
-    folds: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--fold",
-            help="Fold number or 'all' for fold_all; repeat for an ensemble. "
-            "Omit to detect numeric folds.",
-        ),
-    ] = None,
-    checkpoint_name: Annotated[
-        str, typer.Option("--checkpoint", help="MLX checkpoint directory name.")
-    ] = "checkpoint_final",
-    source_profile: Annotated[
-        str,
-        typer.Option(
-            "--source-profile",
-            help="Explicit source-bound model identity profile.",
-        ),
-    ] = DEFAULT_INFERENCE_SOURCE_PROFILE,
-    precision: Annotated[
-        str,
-        typer.Option(
-            "--precision",
-            help="fast-fp32, or source-fp32: MLX on Metal in the pinned Torch rounding order.",
-        ),
-    ] = "fast-fp32",
-    save_probabilities: Annotated[
-        bool, typer.Option("--save-probabilities", help="Write .npz and .pkl sidecars.")
-    ] = False,
+    folds: _FoldOption = None,
+    checkpoint_name: _CheckpointOption = "checkpoint_final",
+    source_profile: _SourceProfileOption = DEFAULT_INFERENCE_SOURCE_PROFILE,
+    precision: _PrecisionOption = "fast-fp32",
+    save_probabilities: _SaveProbabilitiesOption = False,
     overwrite: Annotated[bool, typer.Option("--overwrite")] = False,
     continue_existing: Annotated[
         bool,
@@ -231,35 +210,23 @@ def model_predict_folder_command(
         int, typer.Option("--max-inflight-bytes", min=1,
                           help="Shared prepared-input and queued-export payload budget in bytes.")
     ] = 2 * 1024**3,
-    step_fraction: Annotated[
-        float,
-        typer.Option(
-            "--step-fraction", min=0, max=1,
-            help="Sliding-window step fraction. Zero is rejected during prediction.",
-        ),
-    ] = 0.5,
-    disable_mirroring: Annotated[
-        bool,
-        typer.Option(
-            "--disable-mirroring", help="Skip the checkpoint's mirroring test-time augmentation."
-        ),
-    ] = False,
+    step_fraction: _StepFractionOption = 0.5,
+    disable_mirroring: _DisableMirroringOption = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Predict split-dataset cases from a raw input folder, as the MedMLX runner does."""
 
-    bundle = _load_selected_model_bundle(
+    predictor = load_cli_predictor(
         model_folder,
         configuration=configuration,
-        folds=folds,
+        folds=parse_selected_folds(folds),
         checkpoint_name=checkpoint_name,
         source_profile=source_profile,
         precision=precision,
+        step_fraction=step_fraction,
         disable_mirroring=disable_mirroring,
     )
-    from nnunet_mlx.medmlx import predictor
-
-    result = predictor(bundle, step_fraction=step_fraction).predict_folder(
+    result = predictor.predict_folder(
         input_folder,
         output_folder,
         previous_stage_folder=previous_stage_folder,
@@ -272,12 +239,7 @@ def model_predict_folder_command(
         export_processes=export_processes,
         max_inflight_bytes=max_inflight_bytes,
     )
-    payload = result.to_payload()
-    if json_output:
-        typer.echo(json.dumps(payload, sort_keys=True))
-        return
-    typer.echo(f"predicted: {len(result.predictions)}")
-    typer.echo(f"skipped: {len(result.skipped)}")
+    echo_folder_result(result, json_output=json_output)
 
 
 @app.command("ensemble")
@@ -421,27 +383,38 @@ def model_apply_postprocessing_command(
     typer.echo(f"postprocessed: {len(written)}")
 
 
-def _load_selected_model_bundle(
+def load_cli_predictor(
     model_folder: Path,
     *,
     configuration: str,
-    folds: Sequence[str] | None,
-    checkpoint_name: str,
-    source_profile: str,
-    precision: str,
+    folds: Sequence[int | str] | None,
+    step_fraction: float,
     disable_mirroring: bool = False,
-) -> ModelBundle:
-    """Load the requested folds and optionally disable test-time mirroring."""
-    selected_folds = parse_selected_folds(folds)
-
+    checkpoint_name: str = "checkpoint_final",
+    source_profile: str = DEFAULT_INFERENCE_SOURCE_PROFILE,
+    precision: str = "fast-fp32",
+) -> ModelFolderPredictor:
+    """Load a CLI-selected model with nnU-Net's float16 window accumulation."""
     from nnunet_mlx.model.folder import load_model_bundle
+    from nnunet_mlx.prediction.pipeline import ModelFolderPredictor
 
     bundle = load_model_bundle(
         model_folder,
         configuration=configuration,
-        folds=selected_folds,
+        folds=folds,
         checkpoint_name=checkpoint_name,
         source_profile=source_profile,
         precision=precision,
     )
-    return replace(bundle, mirroring_axes=()) if disable_mirroring else bundle
+    if disable_mirroring:
+        bundle = replace(bundle, mirroring_axes=())
+    return ModelFolderPredictor(bundle, step_fraction=step_fraction, accumulation="nnunet-fp16")
+
+
+def echo_folder_result(result: FolderPredictionResult, *, json_output: bool) -> None:
+    """Report the same folder result for native and upstream model commands."""
+    if json_output:
+        typer.echo(json.dumps(result.to_payload(), sort_keys=True))
+        return
+    typer.echo(f"predicted: {len(result.predictions)}")
+    typer.echo(f"skipped: {len(result.skipped)}")

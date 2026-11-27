@@ -35,7 +35,7 @@ def prepare_training_command(
     ] = "0",
 ) -> None:
     """Prepare training cases from dataset.json, imagesTr and labelsTr."""
-    from nnunet_mlx.training.data import prepare_training_data
+    from nnunet_mlx import prepare_training_data
 
     prepared = prepare_training_data(
         dataset,
@@ -100,6 +100,10 @@ def train_command(
     compile_step: Annotated[
         bool | None, typer.Option("--compile/--eager", help="Compile the training step.")
     ] = None,
+    deep_supervision: Annotated[
+        bool | None,
+        typer.Option("--deep-supervision", help="Supervise intermediate decoder outputs."),
+    ] = None,
     resume: Annotated[bool, typer.Option(help="Resume from the last completed epoch.")] = False,
     initialize_from: Annotated[
         Path | None,
@@ -109,11 +113,7 @@ def train_command(
     ] = None,
 ) -> None:
     """Train a 2-D or 3-D segmentation network natively in MLX."""
-    from nnunet_mlx.runtime import runtime_info
-
-    runtime_info()
-
-    from nnunet_mlx.training.runner import TrainingOverrides, train_model
+    from nnunet_mlx import TrainingOverrides, train_model
 
     overrides = cast(
         TrainingOverrides,
@@ -134,6 +134,7 @@ def train_command(
                 "balanced_ce": balanced_ce,
                 "cosine_lr": cosine_lr,
                 "compile_step": compile_step,
+                "deep_supervision": deep_supervision,
             }.items()
             if value is not None
         },

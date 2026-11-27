@@ -10,7 +10,7 @@ from medmlx_core.weights import model_folder
 
 from nnunet_mlx import medmlx
 from nnunet_mlx.medmlx_types import RunResult
-from nnunet_mlx.named_models import READINESS, segment_folder
+from nnunet_mlx.named_models import READINESS
 
 MODEL = {
     "id": "mrsegmentator", "label": "MRSegmentator", "task": "segmentation",
@@ -48,8 +48,9 @@ def run(
     )
     folder = model_folder("mrsegmentator", weights_path)
     folds = [fold] if fold is not None else [0] if fast else list(range(5))
-    return segment_folder(
-        folder, images, output_dir, "3d_fullres_bs8", folds, overwrite=overwrite,
+    return medmlx.segment_case(
+        weights_path=folder, image_paths=images, output_dir=output_dir,
+        configuration="3d_fullres_bs8", folds=folds, overwrite=overwrite,
         grid_of="image_path", source_profile="mrsegmentator-1.2-base",
         precision="source-fp32", use_mirroring=False,
     )

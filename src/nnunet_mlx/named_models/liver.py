@@ -7,7 +7,7 @@ from medmlx_core.weights import model_folder
 
 from nnunet_mlx import medmlx
 from nnunet_mlx.medmlx_types import RunResult
-from nnunet_mlx.named_models import READINESS, segment_folder
+from nnunet_mlx.named_models import READINESS
 
 MODEL = {
     "id": "nnunet-liver", "label": "nnU-Net liver CT", "task": "segmentation",
@@ -45,8 +45,9 @@ def run(
         use_mirroring=use_mirroring, step_fraction=step_fraction,
     )
     folder = model_folder("nnunet-liver", weights_path)
-    return segment_folder(
-        folder, images, output_dir, "3d_fullres", None, overwrite=overwrite,
+    return medmlx.segment_case(
+        weights_path=folder, image_paths=images, output_dir=output_dir,
+        configuration="3d_fullres", overwrite=overwrite,
         grid_of="image_path", use_mirroring=use_mirroring, step_fraction=step_fraction,
     )
 

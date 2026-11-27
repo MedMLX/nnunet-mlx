@@ -4,9 +4,16 @@
 
 The native planner uses the training split to choose median voxel spacing and patch
 geometry. The trainer reads memory-mapped cases, samples foreground patches, and
-prefetches one batch. AdamW updates the highest-resolution head and its encoder and
-decoder using a Dice and cross-entropy loss. Class targets use indexed reductions
+prefetches one batch. AdamW trains the encoder, decoder, and full-resolution
+segmentation head using Dice and cross-entropy loss. Class targets use indexed reductions
 with no dense one-hot tensor. Region targets use independent sigmoid outputs.
+The plans' `batch_dice` setting controls whether soft Dice pools voxels across
+each batch or computes Dice per patch.
+
+Experimental deep supervision adds the same loss at intermediate decoder heads.
+Targets are sampled at each head's voxel centers. The weight halves at each
+coarser resolution, with the coarsest head omitted. Prediction uses the
+full-resolution logits.
 
 FP32 is the default. BF16 reduces convolution and activation precision while
 keeping the loss, normalization statistics, parameters, and optimizer state in FP32.
@@ -43,6 +50,25 @@ BF16 on M5 Max and MLX 0.32.5, with `MLX_ENABLE_TF32=0`.
 | Liver | 2 | 130.1 | 3.57 |
 | Pancreas | 0 | 114.5 | 4.45 |
 | Pancreas | 2 | 127.2 | 3.10 |
+
+### Pancreas loss comparison
+
+Three runs used the same 80 training and five validation cases from Decathlon
+Task07, CT normalization, 2 mm spacing, 80×96×96 patches, and seed 506.
+Each ran 2,400 updates on M5 Max with MLX 0.32.5, compiled BF16, batch size one,
+one recomputed stage per path, in-plane augmentation, label 2 sampling, and
+cosine decay. Evaluation used whole validation volumes on the preprocessed grid.
+
+Each row reports the checkpoint with the highest mean pooled foreground Dice.
+
+| Objective | Best epoch | Pancreas Dice | Tumor Dice | Wall time (s) | Peak MLX (GiB) |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Default loss | 24 | 0.557 | 0.000 | 310 | 3.53 |
+| Deep supervision | 24 | 0.570 | 0.000 | 324 | 3.41 |
+| Balanced cross-entropy | 21 | 0.605 | 0.400 | 317 | 3.53 |
+
+Balanced cross-entropy first produced tumor overlap after 900 updates.
+The comparison used one seed and a single validation split.
 
 ### Decathlon convergence pilot
 

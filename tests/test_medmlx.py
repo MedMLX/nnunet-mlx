@@ -191,24 +191,21 @@ def test_runner_does_not_clobber_destination_created_during_prediction(
     case: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Enforce overwrite=False when publishing, including a concurrent writer."""
-    from medmlx_core.errors import ModelExecutionError
+    import os
 
-    from nnunet_mlx.prediction.pipeline import RawPredictionResult
+    from medmlx_core.errors import ModelExecutionError
 
     folder, source = case
     output = tmp_path / "out"
     target = output / "mask.nii.gz"
-    predict = ModelFolderPredictor.predict_case
+    link = os.link
 
-    def raced(self: ModelFolderPredictor, image_files: Sequence[str | Path],
-              output_prefix: str | Path, *, save_probabilities: bool,
-              overwrite: bool) -> RawPredictionResult:
-        result = predict(self, image_files, output_prefix,
-                         save_probabilities=save_probabilities, overwrite=overwrite)
-        target.write_bytes(b"concurrent writer")
-        return result
+    def raced(staged: Path, destination: Path) -> None:
+        if destination == target:
+            target.write_bytes(b"concurrent writer")
+        link(staged, destination)
 
-    monkeypatch.setattr(ModelFolderPredictor, "predict_case", raced)
+    monkeypatch.setattr(os, "link", raced)
     with pytest.raises(ModelExecutionError):
         medmlx.run(weights_path=str(folder), image_paths=[str(source)], output_dir=str(output))
     assert target.read_bytes() == b"concurrent writer"
