@@ -636,7 +636,7 @@ wheels = [
 
 [[package]]
 name = "nnunet-mlx"
-version = "0.10.0"
+version = "0.10.1"
 source = { editable = "." }
 dependencies = [
     { name = "blosc2" },
